@@ -31,6 +31,9 @@ The upcoming **v3.0.0 release** will include:
 
 Further macOS compatibility updates will be addressed during this development cycle. (10/March/2026)
 
+14/March/2026. Fuck, fixed over 20 bugs in general. Now the TUI goes fully unresponsive in macOS. Goddamnit. Tired, will work on it 15-March through 16-March. 
+Terminal looses context because for some goddamned reason, macOS decides mpv will still run even if its cocoa app window is closed. Addressing quickly, tiresome. Pardon the inconveniece. **DO NOT update your ytcui until 17 March**
+
 ---
 
 ## Install
