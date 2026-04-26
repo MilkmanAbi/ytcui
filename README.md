@@ -43,6 +43,7 @@ The installer walks you through everything — backend, thumbnails, theme — th
 
 **Per-element colour customisation** — override any UI element's colour on top of any theme. Mix dracula with a custom accent, or build something entirely your own.
 
+> Notes: ytcui's structure and build instructions changed >2.9.1, so if you want to install v3.0.0 by upgrading from an older version, it's recommended to manually uninstall first. Install v3.0.0 with the one liner install. >3.5.0, OIS will be introduced to prevent updates from breaking, Dynamically building based on remote versions make config. Please pardon the issues!!
 ---
 
 ## Keys
