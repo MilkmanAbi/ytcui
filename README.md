@@ -1,12 +1,8 @@
-# ytcui 🐱
+# ytcui (=^･ω･^=)
 
-> **v3.0.0 with playlist features, better history tab, clickable links delayed slightly because I'm having a horrible code block, can't code well at the moment, brain tired.
-> **v2.5.0** — Cross-platform release! Now runs natively on macOS and BSD!
+A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
-**ytcui 3.0.0 Alpha with ytcui-dl in place of yt-dlp and using TinyRenderCache coming soon, expect speedups :) Heavy rewriting and optimising cross platform speed consistency, yayy**
-
-A terminal YouTube client. Search, play, and manage videos without leaving your terminal.
-Built in C++ with ncurses. Plays audio and video via mpv, fetches via yt-dlp.
+Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in) or **yt-dlp**.
 
 <img src="Pictures/ytcui.png" alt="ytcui screenshot">
 
@@ -14,144 +10,157 @@ Built in C++ with ncurses. Plays audio and video via mpv, fetches via yt-dlp.
 
 ## Install
 
-**One-liner:**
-
 ```bash
 git clone https://github.com/MilkmanAbi/ytcui.git && cd ytcui && chmod +x install.sh && ./install.sh
 ```
 
-The installer auto-detects your OS and package manager, handles dependencies, builds, and installs `ytcui` to your PATH.
+The installer walks you through everything — backend, thumbnails, theme — then builds and installs to your PATH.
 
 ### Supported Platforms
 
-| Platform    | Package Manager                                  | Notes                            |
-| ----------- | ------------------------------------------------ | -------------------------------- |
-| **Linux**   | apt, pacman, dnf, yum, zypper, apk, emerge, xbps | Full support                     |
-| **macOS**   | Homebrew                                         | Auto-installs Homebrew if needed |
-| **FreeBSD** | pkg                                              | Native `procctl` support         |
-| **WSL2**    | (same as Linux)                                  | Works great under WSL            |
-
-**Then just run:**
-
-```bash
-ytcui
-```
+| Platform | Package Manager | Notes |
+|----------|----------------|-------|
+| **Linux** | apt, pacman, dnf, yum, zypper, apk, emerge, xbps | Full support |
+| **macOS** | Homebrew or MacPorts | Auto-installs either if needed |
+| **FreeBSD** | pkg | Native `procctl` support |
+| **WSL2** | (same as Linux) | Works great |
 
 ---
 
-## Update
+## What's new in v3.0.0
 
-ytcui checks for updates automatically on startup. If an update is available, you'll see:
+**Playlists** — create named playlists, add videos from search results or history, reorder, remove, copy between playlists. Stored locally and persists across sessions.
 
-```
-⬆ Update available: 2.0.0 → 2.1.0 (run ytcui --upgrade) (NOTE: Upgrade tool introduced in 2.0.1, if your version is < 2.0.1, please manually remove binary and reinstall, from that point, 2.0.1 and >2.0.1 will auto upgrade cleanly)
-```
+**ytcui-dl** — a built-in InnerTube client that replaces yt-dlp entirely. Talks directly to YouTube's mobile API. Search results appear near-instantly, stream URLs are prefetched in the background while you browse. No Python, no subprocess overhead.
 
-To upgrade:
+**Clickable titles everywhere** — click any video in History or Feed to search it up and land straight in Results with the full action menu. Pick audio, video, loop, whatever you want.
 
-```bash
-ytcui --upgrade
-```
+**Esc re-searches** — pressing Esc from Results re-runs your last query, so you can pick a different video without retyping anything.
 
-That's it! No need to keep the repo folder — the update script is installed to `/usr/local/share/ytcui/`.
+**Coloured thumbnails** (EP1) — proper 256-colour rendering via ncurses colour pairs. No more monochrome silhouettes. Works on any 256-colour terminal without ghosting.
 
-To skip the startup update check: `ytcui --no-update-check`
+**18 themes** — eight established palettes plus ten new soft pastel colour schemes. All configurable per-element in `config.json`.
 
----
-
-## What it does
-
-* **Search & play** — search YouTube and play audio or video instantly
-* **Library** — bookmark videos and subscribe to channels, persisted locally
-* **Watch history** — last 100 items, browseable
-* **Browser auth** — login with browser cookies to access age-restricted content
-* **Download** — save video or audio to disk
-* **UTF-8** — full CJK, emoji, and international text support
-* **Mouse + keyboard** — click anything or use vim keys
-* **Themes** — 8 color schemes to choose from
+**Per-element colour customisation** — override any UI element's colour on top of any theme. Mix dracula with a custom accent, or build something entirely your own.
 
 ---
 
 ## Keys
 
-| Key          | Action                    |
-| ------------ | ------------------------- |
-| `Tab`        | Cycle focus               |
-| `j` / `k`    | Up / down                 |
-| `h` / `l`    | Left / right              |
-| `Enter`      | Select / open action menu |
-| `Esc`        | Back / cancel             |
-| `/`          | Focus search              |
-| `p`          | Pause / resume (global)   |
-| `s` or `...` | Sort & filter             |
-| `q`          | Quit                      |
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate up / down |
+| `h` / `l` | Navigate left / right (tabs, menus) |
+| `Tab` | Cycle panel focus |
+| `Enter` | Select / open action menu |
+| `Esc` | Back / re-search from Results |
+| `/` | Jump to search |
+| `p` | Pause / resume (global) |
+| `s` | Sort & filter |
+| `n` | New playlist (in Playlists tab) |
+| `g` / `G` | Jump to top / bottom of results |
+| `q` | Quit |
 
-Mouse works too — click tabs, results, the `...` button, scroll to navigate.
+Mouse works everywhere — click tabs, result rows, action items, info panel, scroll wheel navigates.
+
+---
+
+## Tabs
+
+| Tab | What's there |
+|-----|-------------|
+| **Library** | Subscriptions (left) + saved videos (right) |
+| **Playlists** | All your playlists — open, create, manage |
+| **Feed** | Recently watched + subscribed channels |
+| **History** | Everything you've played — click any title to search it |
+| **Results** | Your last search, always accessible while music plays |
 
 ---
 
 ## Usage
 
 ```bash
-ytcui                     # normal (default theme)
-ytcui --theme dracula     # dracula color scheme
-ytcui -t nord             # nord theme
-ytcui --grayscale         # minimal blue/gray (legacy)
-ytcui --debug             # enable debug logging
-ytcui --debug --logdump   # full mpv/yt-dlp output logging
-ytcui --upgrade           # upgrade to latest version
-ytcui --help              # help
-ytcui --version           # show version
+ytcui                      # launch
+ytcui -t pink              # sakura theme
+ytcui -t dracula           # dracula theme
+ytcui --colors             # list all colour elements + config example
+ytcui --debug              # enable debug logging
+ytcui --debug --logdump    # full mpv output logging
+ytcui --upgrade            # upgrade to latest version
+ytcui --diag               # full system diagnostic
+ytcui --help               # help
+ytcui --version            # version
 ```
 
 ---
 
 ## Themes
 
-| Theme       | Description                              |
-| ----------- | ---------------------------------------- |
-| `default`   | Vibrant terminal colors                  |
-| `grayscale` | Minimal Nord-inspired blues              |
-| `nord`      | Arctic, bluish palette                   |
-| `dracula`   | Dark purple/pink vampire theme           |
-| `solarized` | Precision colors for machines and people |
-| `monokai`   | Classic code editor theme                |
-| `gruvbox`   | Retro groove colors                      |
-| `tokyo`     | Tokyo Night dark theme                   |
+Ten new soft pastel themes joined the classics in v3.0.0:
 
-Set permanently in `~/.config/ytcui/config.json`:
+| Theme | Vibe |
+|-------|------|
+| `default` | Clean terminal colours |
+| `dracula` | Deep purples and crimson. Creature of the night |
+| `nord` | Arctic blues and soft greys. Nordic winter calm |
+| `tokyo` | Neon city rain at midnight |
+| `gruvbox` | Warm wood and amber. Retro cosiness |
+| `monokai` | Vivid syntax colours. The classic dev palette |
+| `solarized` | Precision-tuned tones. Easy on the eyes all day |
+| `pink` | Soft sakura blossoms and blush petals at dawn |
+| `purple` | Wisteria and lavender fields in the late afternoon |
+| `blue` | Powder sky, periwinkle haze, summer sea glass |
+| `green` | Morning sage, honeydew, and botanical softness |
+| `mint` | Cool spearmint foam and pale jade on a spring day |
+| `ocean` | Pale turquoise coves and seafoam on still water |
+| `coral` | Warm peach, apricot, and sun-kissed sandy blush |
+| `amber` | Champagne fields, soft gold, and cornsilk warmth |
+| `red` | Dusty rose, linen, the blush of a gentle sunset |
+| `slate` | Cool steel mist and powder blue-grey at dusk |
+| `grayscale` | No colour. Just shape, light, and shadow |
+
+Switch anytime: `ytcui -t mint`
+
+---
+
+## Colour customisation
+
+Override any UI element on top of any base theme. Add a `"colors"` block to your config:
 
 ```json
 {
-  "theme": "dracula"
+  "theme": "dracula",
+  "colors": {
+    "accent": 198,
+    "title":  213,
+    "border": 141
+  }
 }
 ```
 
----
+Run `ytcui --colors` for the full element reference and a 256-colour chart link.
 
-## Action menu
-
-Select a video and press `Enter`:
-
-* Play video / Play audio / Play audio (loop)
-* Pause / resume
-* View channel
-* Subscribe / unsubscribe
-* Open in browser
-* Bookmark / unbookmark
-* Download video / audio
-* Copy URL
-* Login via browser cookies
-* Logout
+**Elements:** `bg`, `search_box`, `title`, `channel`, `stats`, `selected`, `action`, `action_sel`, `status`, `border`, `header`, `accent`, `tag`, `published`, `bookmark`, `desc`
 
 ---
 
-## Tabs
+## Backend: ytcui-dl vs yt-dlp
 
-* **Library** — subscriptions (left) + saved videos (right)
-* **Feed** — recently watched + subscribed channels
-* **History** — everything you've played
-* **Results** — your last search, always accessible while music plays
+ytcui ships with two backends, chosen at install time (switchable by rebuilding):
+
+| | ytcui-dl | yt-dlp |
+|---|---|---|
+| **Speed** | Near-instant | 2–5s per video |
+| **Dependencies** | None (built-in) | Python + yt-dlp |
+| **How it works** | InnerTube API (YouTube mobile) | JS player extraction |
+| **Stability** | Experimental | Battle-tested |
+| **Recommended** |  Yes | If ytcui-dl breaks |
+
+The backend is baked in at compile time. Rebuild to switch:
+```bash
+make BACKEND=ytcuidl   # default
+make BACKEND=ytdlp
+```
 
 ---
 
@@ -161,70 +170,68 @@ Select a video and press `Enter`:
 
 ```json
 {
+  "theme": "pink",
   "max_results": 15,
-  "theme": "default",
-  "grayscale": false
+  "show_thumbnails": true,
+  "colors": {}
 }
 ```
 
 Data lives in:
-
-* `~/.config/ytcui/` — config
-* `~/.local/share/ytcui/` — library, history
-* `~/.cache/ytcui/` — debug log, thumbnails
-
----
-
-## Customising
-
-Colors, the koala, and status bar messages are all editable directly in the source. See [`CUSTOMISING.md`](CUSTOMISING.md) for exact file names and line numbers.
+- `~/.config/ytcui/` — config
+- `~/.local/share/ytcui/` — library, history, playlists
+- `~/.cache/ytcui/` — thumbnails, debug log
 
 ---
 
 ## Building manually
 
 ```bash
-make        # build
-make clean  # clean
+make BACKEND=ytcuidl   # build with ytcui-dl (default)
+make BACKEND=ytdlp     # build with yt-dlp
+make clean             # clean
 ```
 
-**Linux:** `g++`, `make`, `libncursesw-dev`, `mpv`, `yt-dlp`
-**macOS:** `clang++` (Xcode CLT), Homebrew's `ncurses`, `mpv`, `yt-dlp`
-**FreeBSD:** `clang++`, `gmake`, `ncurses`, `mpv`, `yt-dlp`
+**Dependencies by platform:**
 
-Optional: `chafa` (thumbnails), `curl` (async thumbnail downloads)
+| Platform | Build deps | Runtime |
+|----------|-----------|---------|
+| Linux | `g++`, `make`, `libncursesw-dev`, `libcurl-dev`, `libssl-dev` | `mpv`, `chafa` |
+| macOS | Xcode CLT, Homebrew/MacPorts `ncurses`, `curl`, `openssl@3` | `mpv`, `chafa` |
+| FreeBSD | `clang++`, `gmake`, `ncurses`, `curl`, `openssl` | `mpv`, `chafa` |
 
 `nlohmann/json` is bundled — no separate install needed.
 
 ---
 
+## Updating
+
+```bash
+ytcui --upgrade
+```
+
+The updater clones the latest release, detects your current backend, rebuilds, and reinstalls — all in one command. The update script lives at `/usr/local/share/ytcui/update.sh`, so you don't need the original repo folder.
+
+---
+
 ## Troubleshooting
 
-**UTF-8 looks garbled** — make sure your terminal locale is UTF-8:
-
+**UTF-8 looks garbled** — set your terminal locale:
 ```bash
-export LANG=en_US.UTF-8
+export LANG=en_US.UTF-8   # add to ~/.bashrc or ~/.zshrc
 ```
 
-Add to `~/.bashrc` or `~/.zshrc` to make it permanent.
+**Age-restricted videos fail** — use browser auth from the action menu (Login via browser cookies).
 
-**Age-restricted videos fail** — use browser auth from the action menu.
-
-**Audio keeps playing after quit** — update to v2.5.0+; the cross-platform process group fix handles this on all platforms.
-
-**Audio glitches/weird playback** — v2.0.0+ includes stability fixes with better format selection and buffering.
-
-**macOS: "command not found: brew"** — after installing Homebrew, add to `~/.zshrc`:
-
+**macOS: `command not found: brew`** — after Homebrew installs, add to `~/.zshrc`:
 ```bash
-eval "$(/opt/homebrew/bin/brew shellenv)"  # Apple Silicon
-# or
-eval "$(/usr/local/bin/brew shellenv)"     # Intel Mac
+eval "$(/opt/homebrew/bin/brew shellenv)"   # Apple Silicon
+eval "$(/usr/local/bin/brew shellenv)"      # Intel
 ```
 
-**macOS: processes linger after quit** — v2.5.0 uses `kqueue(EVFILT_PROC)` for reliable child cleanup.
+**Thumbnails are missing or broken** — check `chafa` is installed: `which chafa`. Run `ytcui --diag` for a full system check.
 
-**Debug mode** — run with `ytcui --debug --logdump` to capture detailed logs to `~/.cache/ytcui/`.
+**Debug mode** — run `ytcui --debug --logdump` to capture detailed logs to `~/.cache/ytcui/`.
 
 ---
 
@@ -234,31 +241,10 @@ MIT
 
 ---
 
-Many YouTube TUIs already exist, and many of them are more visually polished or feature-heavy. **ytcui is intentionally simplistic by design.**
+*ytcui values simplicity over flashiness, portability over lock-in, and clean code over clever abstractions. It's a practical terminal client that aims to stay small, readable, and reliable — something you can actually open the source of and understand.*
 
-Its goal is not to compete on flashiness, but on clarity and maintainability.
-
-ytcui aims to remain readable, approachable, and easy to hack on. The codebase is written entirely in C++ and structured to be understandable rather than clever. If you open the source, you should be able to follow what it’s doing without fighting layers of abstraction or framework complexity.
-
-Another core principle is **minimal dependency bloat**. ytcui relies only on portable, widely available tools (such as `ncurses`, `mpv`, and `yt-dlp`) instead of large frameworks or language runtimes. This keeps the install lightweight and avoids dependency hell.
-
-Portability is a first-class goal. ytcui is designed to build and run cleanly across:
-
-* Linux / GNU distributions
-* BSD systems
-* macOS
-
-The update system is also designed to be clean and predictable — no hidden package manager conflicts, no breaking system libraries, no runtime environments to manage. Just a straightforward upgrade path that keeps the program self-contained and stable.
-
-In short, ytcui values:
-
-* Simplicity over flashiness
-* Maintainability over complexity
-* Portability over ecosystem lock-in
-* Clean updates over fragile dependency chains
-
-It’s a practical terminal client that aims to stay small, understandable, and reliable over time.
+*Made with (=^･ω･^=) and ncurses*
 
 ---
 
-*Made with 🐱 and ncurses*
+If you found like this, please 🌟 it, makes me feel fuzzy and nice inside. ૮ ˶ᵔ ᵕ ᵔ˶ ა
