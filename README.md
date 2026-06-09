@@ -17,6 +17,7 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 ```bash
 git clone https://github.com/MilkmanAbi/ytcui.git && cd ytcui && chmod +x install.sh && ./install.sh
 ```
+> OIS integration coming soon... Will improve the quality of upgrading, installing, uninstalling and features management and config handling...
 
 The installer walks you through everything — backend, thumbnails, theme — then builds and installs to your PATH.
 
@@ -31,7 +32,7 @@ The installer walks you through everything — backend, thumbnails, theme — th
 
 ---
 
-## What's new in v3.0.0
+## What's new in v3.0.0 (3.2.0 is a software bugs and feature enablement patch)
 
 **Playlists** — create named playlists, add videos from search results or history, reorder, remove, copy between playlists. Stored locally and persists across sessions.
 
