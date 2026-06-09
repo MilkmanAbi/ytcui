@@ -8,6 +8,8 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 
 <img src="Pictures/ytcui.png" alt="ytcui screenshot">
 
+> ytcui running in Windows Terminal under WSL. >_<
+
 ---
 
 ## Install
