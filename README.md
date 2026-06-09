@@ -1,6 +1,6 @@
 # ytcui (=^･ω･^=)
 
-> **3.2.0 > Added fixes for Unwanted Behaviour (UB) in code, Memory Leaks, Input Locking, memory creep on edge cases and added potential partial support for other terminals... OIS integration, RPM, DEB and AUR packages coming soon, more fixes coming...**
+> **3.2.0 > Added fixes for Unwanted Behaviour (UB) in code, Memory Leaks, Input Locking, memory creep on edge cases and added potential partial support for other terminals... OIS integration, RPM, DEB and AUR packages coming soon, more fixes coming... See Changelog.md 2026/06/09 for reference.**
 
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
