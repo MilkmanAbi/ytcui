@@ -10,6 +10,15 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 
 ---
 
+<p align="center">
+  <img src="Pictures/ytcui-streamlined.png" alt="ytcui screenshot 1" width="359">
+  <img src="Pictures/ytcui-streamlined-3.png" alt="ytcui screenshot 3" width="359">
+</p>
+
+> ytcui in streamlined view >_O
+
+---
+
 ## Install
 
 ```bash
