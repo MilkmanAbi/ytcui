@@ -6,6 +6,8 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 
 <img src="Pictures/ytcui.png" alt="ytcui screenshot">
 
+> ytcui running in Windows Terminal under WSL. >_<
+
 ---
 
 ## Install
@@ -38,23 +40,27 @@ ytcui --install-info   # full install details + dependency status
 
 ---
 
-## What's new in v3.0.0
+## What's new in v3.5.2
+
+**Rock-solid now** — the teardown crash some terminals hit on quit (a heap use-after-free from detached worker threads outliving the curl client) is gone, and every AddressSanitizer / undefined-behaviour issue found since 3.0.0 has been fixed. Quitting, fast searching, and rapid navigation are all clean under ASan.
+
+**One-command install (OIS)** — `sh install.sh` builds from source and installs across Linux, macOS and the BSDs via [OneInstallSystem](https://github.com/MilkmanAbi/OneInstallSystem). It detects your OS and package manager (apt, pacman, dnf, yum, zypper, apk, emerge, xbps, brew, macports, pkg), resolves the right *development* packages (verified per-distro, checked with pkg-config so a runtime CLI is never mistaken for build headers), and registers a clean uninstaller. Manage it afterwards with `ytcui --update`, `--reinstall`, `--uninstall`, `--install-info`, and `--ois`. The installer asks a few setup questions up front: backend (ytcui-dl / yt-dlp), streamlined mode, thumbnails, and theme.
+
+**Streamlined mode** — on very narrow terminals ytcui automatically switches to a dense, themed, minimalist music-player UI: an iPod-style section menu (Search · Library · Playlists · Feed · History), compact lists, a Play video / Play audio chooser, and a now-playing card with album-art thumbnail, waveform, time and transport controls. It's conservative — the default is always the full UI, and it only switches when the terminal reports a reliably narrow width. Force it with `--mode auto|normal|streamlined`.
+
+**Real terminal detection** — instead of guessing from `$TERM`, ytcui now identifies the terminal at startup with a batched, timeout-bounded query handshake (XTVERSION, XTGETTCAP, DA1/DA2/DA3) plus environment and live terminfo, then adapts: truecolor / 256 / 16-colour tiers, sixel/kitty/iterm graphics support, native block-glyph support, and **cell-pixel size detection** for correctly scaled images. Minimal emulators that don't answer degrade safely rather than hanging. Mouse input is enabled only where it's actually supported (no more stray bytes on the Linux console), and `ytcui --diag` prints the full capability report.
+
+**Cleaner highlighting** — the selected row/tab/menu item now uses a proper full-width foreground/background bar painted with explicit spaces, with an auto-contrasting text colour, instead of reverse-video over a default background. It renders consistently across terminals (no more partial or invisible highlights), and falls back to reverse video only on sub-8-colour terminals.
+
+**Terminal robustness** — resizing is handled cleanly (no stale cells), CJK and wide-character titles size correctly by display columns, and layout-breaking code points (control, BiDi-override, zero-width) in YouTube titles are stripped so they can't scramble a line.
 
 **Playlists** — create named playlists, add videos from search results or history, reorder, remove, copy between playlists. Stored locally and persists across sessions.
 
 **ytcui-dl** — a built-in InnerTube client that replaces yt-dlp entirely. Talks directly to YouTube's mobile API. Search results appear near-instantly, stream URLs are prefetched in the background while you browse. No Python, no subprocess overhead.
 
-**Clickable titles everywhere** — click any video in History or Feed to search it up and land straight in Results with the full action menu. Pick audio, video, loop, whatever you want.
+**18 themes** with per-element colour customisation — override any UI element's colour on top of any theme, all configurable in `config.json`.
 
-**Esc re-searches** — pressing Esc from Results re-runs your last query, so you can pick a different video without retyping anything.
-
-**Coloured thumbnails** (EP1) — proper 256-colour rendering via ncurses colour pairs. No more monochrome silhouettes. Works on any 256-colour terminal without ghosting.
-
-**18 themes** — eight established palettes plus ten new soft pastel colour schemes. All configurable per-element in `config.json`.
-
-**Per-element colour customisation** — override any UI element's colour on top of any theme. Mix dracula with a custom accent, or build something entirely your own.
-
-> Notes: ytcui-dl is very much new, I'm, completely rewriting it, just slowly... Currently, ytcui-dl is not suiotable if you prioritise video quality. I'm adding a lot of features to ytcui-dl, support up to 2k video on PCs, possibly 4k (still figuring stuff out). Audio should go from 128kbps to 160kbps in a future release, actively fixing bugs.
+> Note: ytcui-dl is very much new, I'm completely rewriting it, just slowly... Currently, ytcui-dl is not suitable if you prioritise video quality. I'm adding a lot of features to ytcui-dl, support up to 2k video on PCs, possibly 4k (still figuring stuff out). Audio should go from 128kbps to 160kbps in a future release, actively fixing bugs.
 > 
 ---
 
