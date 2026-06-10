@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# OIS.conf — OneInstallSystem config
+# Place at: YourProject/OIS/OIS.conf
+# Only app_name is required. Everything else has a sane default.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Identity ──────────────────────────────────────────────────────────────────
+app_name      = myapp
+display_name  = My Application
+binary        = myapp
+install_path  = /usr/local/bin
+
+# Shown in the --ois panel (optional)
+# additional_info = A terminal app for doing things.
+
+# ── Updates ───────────────────────────────────────────────────────────────────
+# version_url: raw URL to a plain-text VERSION file (just "1.2.3", nothing else)
+version_url   = https://raw.githubusercontent.com/you/myapp/main/VERSION
+github        = you/myapp
+
+# ask     → asks the user during install (recommended)
+# auto    → silently check and update on each launch
+# notify  → tell the user when an update is available, don't install automatically
+# manual  → only update when user explicitly runs: myapp --update
+# off     → never check
+update_mode   = ask
+
+# ── Install ───────────────────────────────────────────────────────────────────
+# auto  → use sudo if available, ~/.local/bin if not
+# yes   → always require sudo
+# no    → always use ~/.local/bin, no sudo
+require_sudo  = auto
+
+# ── Desktop integration (optional) ────────────────────────────────────────────
+# icon             = OIS/assets/icon.png   # 256×256 PNG
+# desktop_category = Utility               # AudioVideo, Development, Game…
+# desktop_comment  = Short description shown in app launchers
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+[build]
+# system = auto    ← auto-detected from: Makefile, CMakeLists.txt, Cargo.toml…
+# system = make | cmake | meson | cargo | go | dotnet | python
+# binary_out = myapp    ← output binary name if different from binary=
+# custom = ./scripts/build.sh   ← override everything with a custom command
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
+# name.package_manager = package-name
+# name.cmd  = command   ← how to check if already installed (default: name itself)
+# name.desc = text      ← shown to user during install
+#
+# Supported package managers:
+#   Linux: apt, pacman, dnf, yum, zypper, apk, emerge, xbps
+#   macOS: brew, macports
+#   BSD:   pkg, pkg_add, pkgin
+
+[deps]
+# Example:
+# ncurses.apt    = libncursesw5-dev
+# ncurses.pacman = ncurses
+# ncurses.brew   = ncurses
+# ncurses.pkg    = ncurses
+# ncurses.cmd    = ncurses-config
+
+[deps.optional]
+# Optional deps — OIS tries to install, skips gracefully if unavailable.
+# chafa.apt  = chafa
+# chafa.brew = chafa
+# chafa.cmd  = chafa
+# chafa.desc = terminal image preview

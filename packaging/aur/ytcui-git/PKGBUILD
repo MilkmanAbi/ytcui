@@ -1,0 +1,44 @@
+# Maintainer: MilkmanAbi
+# ytcui-git — builds ytcui from the latest main. No release tag required, so it
+# never hits the "404 fetching v1.0.0/README.md" problem the old -bin had.
+pkgname=ytcui-git
+_pkgname=ytcui
+pkgver=3.5.2.r0.gffffff
+pkgrel=1
+pkgdesc="Fast terminal YouTube client (ncurses, mpv, built-in ytcui-dl)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/MilkmanAbi/ytcui"
+license=('MIT')
+depends=('ncurses' 'curl' 'openssl' 'mpv' 'chafa')
+makedepends=('git' 'gcc' 'make' 'pkgconf')
+optdepends=('libsixel: in-process SIXEL thumbnail encoding (build with SIXEL=libsixel)'
+            'yt-dlp: fallback backend (build with BACKEND=ytdlp)')
+provides=('ytcui')
+conflicts=('ytcui' 'ytcui-bin')
+source=("git+https://github.com/MilkmanAbi/ytcui.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$srcdir/$_pkgname"
+    # Use the VERSION file plus the git revision so upgrades are detected even
+    # when no tags exist. e.g. 3.0.0.r12.gabcdef
+    local ver
+    ver="$(cat VERSION 2>/dev/null || echo 0.0.0)"
+    printf "%s.r%s.g%s" "$ver" \
+        "$(git rev-list --count HEAD)" \
+        "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "$srcdir/$_pkgname"
+    # BACKEND=ytcuidl (default) needs no Python/yt-dlp.
+    # Add SIXEL=libsixel here if you want in-process sixel and have libsixel.
+    make BACKEND=ytcuidl
+}
+
+package() {
+    cd "$srcdir/$_pkgname"
+    make PREFIX=/usr DESTDIR="$pkgdir" install
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
+}
