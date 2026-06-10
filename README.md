@@ -25,6 +25,8 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 git clone https://github.com/MilkmanAbi/ytcui.git && cd ytcui && sh install.sh
 ```
 
+> 3.5.2 is unforunately a breaking update since the Install System has been replaced and updated to OIS, manually uninstalled older versions may be required via uninstalling the binary. Fortunately, ytcui updates >3.5.2 will be non breaking with OIS handling clean rebuilds hereby.
+
 Installation is handled by [OneInstallSystem (OIS)](https://github.com/MilkmanAbi/OneInstallSystem):
 it detects your OS and package manager, installs the right dependencies
 (verified per-distro), builds from source, and installs to your PATH. Manage it
