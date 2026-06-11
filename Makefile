@@ -52,22 +52,33 @@ endif
 # CRITICAL: Must use ncursesw (wide-char ncurses) for proper UTF-8 rendering.
 
 ifeq ($(OS_TYPE),macos)
-    # macOS: Homebrew ncurses (not linked by default)
-    BREW_PREFIX := $(shell brew --prefix 2>/dev/null || echo "/opt/homebrew")
-    NCURSES_PREFIX := $(BREW_PREFIX)/opt/ncurses
-    
-    ifneq ($(wildcard $(NCURSES_PREFIX)/lib/libncursesw.*),)
-        NCURSES_CFLAGS := -I$(NCURSES_PREFIX)/include
-        NCURSES_LIBS := -L$(NCURSES_PREFIX)/lib -lncursesw
-    else
-        # Fallback to Apple's system ncurses. This is 5.7 (from 2008): it lacks
-        # 256-colour / extended-pair support and mishandles high colour pairs,
-        # which degrades (and historically crashed) coloured thumbnails. The
-        # code now guards against this at runtime, but Homebrew ncurses is
-        # strongly recommended. Install with:  brew install ncurses
-        NCURSES_CFLAGS :=
+    # macOS: prefer, in order — pkg-config (MacPorts/Homebrew with .pc files),
+    # Homebrew's keg-only ncurses, MacPorts under /opt/local, then the Apple
+    # system ncurses (5.7) as a last resort.
+    NCURSES_CFLAGS := $(shell pkg-config --cflags ncursesw 2>/dev/null)
+    NCURSES_LIBS   := $(shell pkg-config --libs   ncursesw 2>/dev/null)
+    ifeq ($(NCURSES_LIBS),)
+        BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+        ifneq ($(BREW_PREFIX),)
+            ifneq ($(wildcard $(BREW_PREFIX)/opt/ncurses/lib/libncursesw.*),)
+                NCURSES_CFLAGS := -I$(BREW_PREFIX)/opt/ncurses/include
+                NCURSES_LIBS := -L$(BREW_PREFIX)/opt/ncurses/lib -lncursesw
+            endif
+        endif
+    endif
+    ifeq ($(NCURSES_LIBS),)
+        # MacPorts: ncurses 6 under /opt/local (libncursesw, or libncurses
+        # built with wide support).
+        ifneq ($(wildcard /opt/local/lib/libncursesw.*),)
+            NCURSES_CFLAGS := -I/opt/local/include
+            NCURSES_LIBS := -L/opt/local/lib -lncursesw
+        else ifneq ($(wildcard /opt/local/lib/libncurses.*),)
+            NCURSES_CFLAGS := -I/opt/local/include
+            NCURSES_LIBS := -L/opt/local/lib -lncurses
+        endif
+    endif
+    ifeq ($(NCURSES_LIBS),)
         NCURSES_LIBS := -lncurses
-        SYSTEM_NCURSES_WARNING := 1
     endif
 else ifeq ($(OS_TYPE),freebsd)
     # FreeBSD: ncurses is in base system
@@ -77,6 +88,23 @@ else
     # Linux: Use pkg-config
     NCURSES_LIBS := $(shell pkg-config --libs ncursesw 2>/dev/null || echo "-lncursesw")
     NCURSES_CFLAGS := $(shell pkg-config --cflags ncursesw 2>/dev/null || echo "")
+endif
+
+# Accurate old-ncurses warning: probe the curses.h the compiler will actually
+# use (with the final include flags) instead of guessing from install paths.
+# This stops the false "Apple system ncurses" warning when the toolchain's
+# default search path already finds MacPorts/Homebrew ncurses 6.
+HASH := \#
+NCURSES_HDR_MAJOR := $(shell echo '$(HASH)include <curses.h>' | $(CXX) $(CXXFLAGS) $(NCURSES_CFLAGS) -E -dM -x c++ - 2>/dev/null | grep '$(HASH)define NCURSES_VERSION_MAJOR' | awk '{print $$3}')
+SYSTEM_NCURSES_WARNING :=
+ifeq ($(OS_TYPE),macos)
+    ifneq ($(NCURSES_HDR_MAJOR),6)
+        # 5.x (Apple system, from 2008) lacks 256-colour / extended-pair
+        # support and mishandles high colour pairs. The code guards against
+        # this at runtime, but a modern ncurses (Homebrew or MacPorts) is
+        # strongly recommended.
+        SYSTEM_NCURSES_WARNING := 1
+    endif
 endif
 
 CXXFLAGS += $(NCURSES_CFLAGS)
@@ -137,8 +165,9 @@ all: info $(TARGET)
 info:
 	@echo "Building ytcui v$(VERSION) for $(OS_TYPE) using $(CXX) [backend=$(BACKEND) sixel=$(SIXEL)]"
 ifeq ($(SYSTEM_NCURSES_WARNING),1)
-	@echo "  WARNING: linking Apple system ncurses (5.7). Coloured thumbnails are"
-	@echo "           limited/unsafe on it. Recommended: brew install ncurses"
+	@echo "  WARNING: building against ncurses $(if $(NCURSES_HDR_MAJOR),$(NCURSES_HDR_MAJOR).x,(unknown)) — coloured thumbnails are"
+	@echo "           limited on ncurses older than 6. A modern ncurses is recommended"
+	@echo "           (Homebrew: brew install ncurses · MacPorts: port install ncurses)."
 endif
 
 $(TARGET): $(OBJECTS) | $(BIN_DIR)
@@ -168,7 +197,6 @@ install: $(TARGET)
 	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/
 	install -d $(DESTDIR)$(PREFIX)/share/ytcui
 	install -m 644 VERSION $(DESTDIR)$(PREFIX)/share/ytcui/
-	install -m 755 update.sh $(DESTDIR)$(PREFIX)/share/ytcui/
 	@echo "Installed to $(DESTDIR)$(PREFIX)/bin/ytcui"
 
 uninstall:

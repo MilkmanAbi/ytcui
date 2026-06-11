@@ -6,6 +6,8 @@
 #include <string>
 #include <unistd.h>
 #include <termios.h>
+#include <langinfo.h>
+#include <clocale>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <curses.h>
@@ -144,6 +146,23 @@ void TermCaps::detect() {
     c.term = env_str("TERM");
     c.is_tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 
+    // ── Locale charset ───────────────────────────────────────────────────────
+    // If the locale is not UTF-8 (e.g. C/POSIX, Latin-1, or terminals like
+    // bobcat / mis-configured mlterm shown in real bug reports), every
+    // multibyte glyph we emit — box-drawing borders, block-art thumbnails,
+    // music symbols — renders as byte garbage. Detect it once and let all
+    // rendering gate on caps.unicode. setlocale here is idempotent with the
+    // later setlocale(LC_ALL, "") in main.
+    setlocale(LC_CTYPE, "");
+    const char* cs = nl_langinfo(CODESET);
+    c.codeset = cs ? cs : "";
+    {
+        std::string up = c.codeset;
+        for (auto& ch : up) ch = (char)toupper((unsigned char)ch);
+        c.unicode = (up.find("UTF-8") != std::string::npos ||
+                     up.find("UTF8")  != std::string::npos);
+    }
+
     std::string lc_term = c.term;
     for (auto& ch : lc_term) ch = (char)tolower((unsigned char)ch);
     std::string tp = env_str("TERM_PROGRAM");
@@ -185,7 +204,7 @@ void TermCaps::detect() {
     // Defaults: assume a modern 256-colour unicode terminal, then specialise.
     std::string colorterm = env_str("COLORTERM");
     bool ct_truecolor = (colorterm == "truecolor" || colorterm == "24bit");
-    c.unicode = true;
+    // (c.unicode already set from the locale codeset above)
 
     auto set = [&](int colors, bool tc, bool ccc, bool blocks, bool sixel,
                    bool kgfx, bool iimg, bool bce, bool revok) {
@@ -336,14 +355,14 @@ std::string TermCaps::summary() const {
         "  identified  : %s\n"
         "  TERM         : %s%s\n"
         "  colours      : %s (%d)   ccc:%s  bce:%s  reverse-ok:%s\n"
-        "  unicode      : %s   native-blocks:%s   mouse(SGR):%s\n"
+        "  unicode      : %s (codeset: %s)   native-blocks:%s   mouse(SGR):%s\n"
         "  graphics     : sixel:%s kitty:%s iterm:%s   cell:%dx%d px\n"
         "  kbd-protocol : %s",
         name.c_str(),
         term.empty() ? "(unset)" : term.c_str(),
         in_multiplexer ? "  [multiplexer]" : "",
         ctier, colors, yn(can_change_color), yn(bce), yn(reverse_ok),
-        yn(unicode), yn(blocks_native), yn(mouse_sgr),
+        yn(unicode), codeset.empty() ? "?" : codeset.c_str(), yn(blocks_native), yn(mouse_sgr),
         yn(sixel), yn(kitty_gfx), yn(iterm_images), cell_px_w, cell_px_h,
         kitty_keyboard ? "kitty" : "legacy");
     return buf;

@@ -49,6 +49,17 @@ private:
     }
     void paint_sel_bar(int y, int x, int w);
 
+    // ── Border glyphs (terminal-robust) ───────────────────────────────────────
+    // We never use ncurses ACS_* line drawing: its VT100 alternate-charset
+    // switching silently fails on a class of terminals (PuTTY, bobcat, mlterm
+    // in some encodings), leaving literal 'l q k x m j' letters as borders.
+    // Instead: Unicode box-drawing glyphs in UTF-8 locales, plain ASCII +-|
+    // everywhere else. Set once in init() from TermCaps.
+    struct Border { const char *h, *v, *tl, *tr, *bl, *br; };
+    Border bd_ {"-", "|", "+", "+", "+", "+"};
+    // Draw a horizontal run of w border cells starting at (y, x).
+    void hline_g(int y, int x, int w) { for (int i = 0; i < w; i++) mvaddstr(y, x + i, bd_.h); }
+
     void setup_colors(const AppState& state);
     void init_thumb_colors();
 

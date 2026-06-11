@@ -52,7 +52,8 @@ struct TermCaps {
     bool reverse_ok = true;          // A_REVERSE renders sanely with colour
     bool blocks_native = false;      // terminal draws block glyphs itself
                                      // (false -> block art depends on the font)
-    bool unicode    = true;          // UTF-8 / wide glyphs usable
+    bool unicode    = true;          // UTF-8 locale: multibyte glyphs are safe
+    std::string codeset;             // nl_langinfo(CODESET), e.g. "UTF-8"
 
     // Input.
     bool mouse_sgr      = true;      // SGR (1006) mouse reporting

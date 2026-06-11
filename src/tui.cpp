@@ -39,6 +39,7 @@ static inline bool wc_problematic(wchar_t wc) {
 }
 
 int TUI::utf8_display_width(const std::string& s) {
+    bool uni = TermCaps::get().unicode;
     int w = 0;
     const char* p = s.c_str();
     const char* end = p + s.size();
@@ -46,9 +47,9 @@ int TUI::utf8_display_width(const std::string& s) {
     while (p < end) {
         wchar_t wc;
         size_t n = mbrtowc(&wc, p, end - p, &mbs);
-        if (n == (size_t)-1 || n == (size_t)-2) { p++; w++; continue; }
+        if (n == (size_t)-1 || n == (size_t)-2) { p++; continue; }
         if (n == 0) break;
-        if (wc_problematic(wc)) { p += n; continue; }
+        if (wc_problematic(wc) || (!uni && (unsigned long)wc >= 0x80)) { p += n; continue; }
         int cw = wcwidth(wc);
         w += (cw > 0) ? cw : 0;
         p += n;
@@ -64,6 +65,7 @@ std::string TUI::utf8_truncate(const std::string& s, int max_cols) {
     if (max_cols <= 3 && !fits) return std::string(max_cols, '.');
 
     int target = fits ? max_cols : max_cols - 3;
+    bool uni = TermCaps::get().unicode;
     std::string result;
     int cols = 0;
     const char* p = s.c_str();
@@ -74,7 +76,10 @@ std::string TUI::utf8_truncate(const std::string& s, int max_cols) {
         size_t n = mbrtowc(&wc, p, end - p, &mbs);
         if (n == (size_t)-1 || n == (size_t)-2) { p++; continue; }
         if (n == 0) break;
-        if (wc_problematic(wc)) { p += n; continue; }   // drop layout-breakers
+        // Drop layout-breakers, and in non-UTF-8 locales drop anything outside
+        // printable ASCII: emitting those bytes is what turns the whole UI into
+        // garbage on terminals like bobcat or a Latin-1 mlterm.
+        if (wc_problematic(wc) || (!uni && (unsigned long)wc >= 0x80)) { p += n; continue; }
         int cw = wcwidth(wc); if (cw < 0) cw = 0;
         if (cols + cw > target) break;
         result.append(p, n);
@@ -120,6 +125,11 @@ bool TUI::init() {
     // Selection bar uses a real colour pair when we have >= 8 colours; otherwise
     // fall back to reverse video (still legible on monochrome/8-colour).
     sel_use_color_ = has_colors() && caps.colors >= 8;
+
+    // Borders: Unicode box-drawing only in a UTF-8 locale; ASCII otherwise.
+    // (Never ACS — see the Border comment in tui.h.)
+    if (caps.unicode) bd_ = {"─", "│", "┌", "┐", "└", "┘"};
+    else              bd_ = {"-", "|", "+", "+", "+", "+"};
 
     initialized_ = true;
     return true;
@@ -984,19 +994,21 @@ void TUI::draw_browser_popup(const AppState& state) {
 }
 
 // ─── Box drawing ──────────────────────────────────────────────────────────────
+// Uses the Border glyph set (Unicode in UTF-8 locales, ASCII otherwise) —
+// never ACS_* (see tui.h).
 void TUI::draw_box(int y, int x, int h, int w, int cp) {
     if (w < 2 || h < 2 || x < 0 || y < 0) return;
     attron(COLOR_PAIR(cp));
-    mvaddch(y, x, ACS_ULCORNER);
-    for (int i = 1; i < w - 1; i++) mvaddch(y, x + i, ACS_HLINE);
-    mvaddch(y, x + w - 1, ACS_URCORNER);
+    mvaddstr(y, x, bd_.tl);
+    hline_g(y, x + 1, w - 2);
+    mvaddstr(y, x + w - 1, bd_.tr);
     for (int i = 1; i < h - 1; i++) {
-        mvaddch(y + i, x,         ACS_VLINE);
-        mvaddch(y + i, x + w - 1, ACS_VLINE);
+        mvaddstr(y + i, x,         bd_.v);
+        mvaddstr(y + i, x + w - 1, bd_.v);
     }
-    mvaddch(y + h - 1, x, ACS_LLCORNER);
-    for (int i = 1; i < w - 1; i++) mvaddch(y + h - 1, x + i, ACS_HLINE);
-    mvaddch(y + h - 1, x + w - 1, ACS_LRCORNER);
+    mvaddstr(y + h - 1, x, bd_.bl);
+    hline_g(y + h - 1, x + 1, w - 2);
+    mvaddstr(y + h - 1, x + w - 1, bd_.br);
     attroff(COLOR_PAIR(cp));
 }
 
@@ -1358,7 +1370,7 @@ void TUI::stream_header(const AppState& state, const std::string& title) {
     mvprintw(0, 1, "%s", utf8_truncate("♪ " + title, W - 2).c_str());
     attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
     attron(COLOR_PAIR(Color::BORDER) | A_DIM);
-    for (int x = 1; x < W - 1; x++) mvaddch(1, x, ACS_HLINE);
+    hline_g(1, 1, W - 2);
     attroff(COLOR_PAIR(Color::BORDER) | A_DIM);
 }
 

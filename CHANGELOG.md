@@ -2,6 +2,30 @@
 
 All notable changes to ytcui will be documented in this file.
 
+## [3.5.3] - 2026-06-11
+
+### Fixed
+- **Borders no longer garble on terminals where ACS line drawing fails**
+  (mlterm, bobcat, PuTTY-class emulators that render boxes as literal
+  `l q k x m j` letters). ytcui no longer uses ncurses ACS/VT100 alternate-
+  charset drawing at all: borders are real Unicode box-drawing glyphs in UTF-8
+  locales and plain ASCII `+ - |` everywhere else.
+- **Non-UTF-8 locales (Latin-1, C/POSIX, legacy terminal encodings) no longer
+  turn the UI into byte garbage.** ytcui now detects the locale charset
+  (nl_langinfo) at startup; when it isn't UTF-8, every multibyte glyph is
+  avoided: thumbnails render with `chafa --symbols ascii`, decorative symbols
+  fall back to ASCII, and non-ASCII bytes in titles are stripped instead of
+  being emitted raw. `ytcui --diag` now reports the detected codeset.
+- **`make install` works again** (MacPorts destroot was failing): the install
+  target referenced the removed `update.sh`. It now installs the binary and
+  VERSION only; lifecycle management belongs to OIS or the package manager.
+- **The macOS "Apple system ncurses (5.7)" warning is now accurate.** The
+  Makefile probes the curses.h the compiler will actually use (via the
+  preprocessor) instead of guessing from Homebrew paths, so MacPorts builds
+  linking ncurses 6 are no longer told to install Homebrew. ncurses detection
+  itself now tries pkg-config, then Homebrew, then MacPorts (/opt/local),
+  then the system library.
+
 ## [3.5.2] - 2026-06-10
 
 ### Added

@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
+#include "termcaps.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include <termios.h>
@@ -168,9 +169,13 @@ public:
         if (!is_cached(video_id) || cols <= 0 || rows <= 0) return {};
         std::string path = thumb_path(video_id);
         char cmd[1024];
+        // In non-UTF-8 locales the Unicode block glyphs chafa emits by default
+        // arrive as multibyte garbage (seen on bobcat / Latin-1 mlterm), so
+        // restrict chafa to plain ASCII symbols there.
+        const char* sym = TermCaps::get().unicode ? "" : "--symbols ascii ";
         snprintf(cmd, sizeof(cmd),
-            "chafa -s %dx%d --animate=off --colors=256 --format=symbols '%s' 2>/dev/null",
-            cols, rows, path.c_str());
+            "chafa -s %dx%d --animate=off --colors=256 --format=symbols %s'%s' 2>/dev/null",
+            cols, rows, sym, path.c_str());
         std::string raw;
         FILE* pipe = popen(cmd, "r");
         if (!pipe) return {};
@@ -186,9 +191,10 @@ public:
         if (!is_cached(video_id) || cols <= 0 || rows <= 0) return "";
         std::string path = thumb_path(video_id);
         char cmd[1024];
+        const char* sym = TermCaps::get().unicode ? "" : "--symbols ascii ";
         snprintf(cmd, sizeof(cmd),
-            "chafa -s %dx%d --animate=off --colors=none '%s' 2>/dev/null",
-            cols, rows, path.c_str());
+            "chafa -s %dx%d --animate=off --colors=none %s'%s' 2>/dev/null",
+            cols, rows, sym, path.c_str());
         std::string result;
         FILE* pipe = popen(cmd, "r");
         if (!pipe) return "";

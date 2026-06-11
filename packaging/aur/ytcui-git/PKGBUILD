@@ -3,7 +3,7 @@
 # never hits the "404 fetching v1.0.0/README.md" problem the old -bin had.
 pkgname=ytcui-git
 _pkgname=ytcui
-pkgver=3.5.2.r0.gffffff
+pkgver=3.5.3.r0.gffffff
 pkgrel=1
 pkgdesc="Fast terminal YouTube client (ncurses, mpv, built-in ytcui-dl)"
 arch=('x86_64' 'aarch64')
