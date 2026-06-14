@@ -39,8 +39,35 @@ esac
 OIS_PM="unknown"
 case "$OIS_OS" in
     macos)
-        command -v brew    >/dev/null 2>&1 && OIS_PM="brew"
-        command -v port    >/dev/null 2>&1 && { [ "$OIS_PM" = "unknown" ] && OIS_PM="macports"; }
+        if [ -n "${OIS_PM_RESOLVED:-}" ]; then
+            # Carried over from the real-user pass across sudo — don't re-prompt.
+            OIS_PM="$OIS_PM_RESOLVED"
+        else
+            _brew_avail=no ; _mp_avail=no
+            command -v brew >/dev/null 2>&1 && _brew_avail=yes
+            command -v port >/dev/null 2>&1 && _mp_avail=yes
+
+            if [ "$_brew_avail" = "yes" ] && [ "$_mp_avail" = "no" ]; then
+                OIS_PM="brew"
+            elif [ "$_brew_avail" = "no" ] && [ "$_mp_avail" = "yes" ]; then
+                OIS_PM="macports"
+            elif [ "$_brew_avail" = "yes" ] && [ "$_mp_avail" = "yes" ]; then
+                # Both installed — ask which to use for deps (barracuda156 case:
+                # MacPorts user who also has Homebrew on PATH but uses port)
+                printf "\n  Both Homebrew and MacPorts are available.\n"
+                printf "  Which should OIS use to install dependencies?\n\n"
+                printf "    1) Homebrew   (brew)\n"
+                printf "    2) MacPorts   (port)\n"
+                printf "\n  Choice [1/2]: "
+                read -r _pmc
+                case "$_pmc" in
+                    2) OIS_PM="macports" ;;
+                    *) OIS_PM="brew" ;;
+                esac
+            else
+                OIS_PM="unknown"
+            fi
+        fi
         ;;
     freebsd|dragonfly) command -v pkg     >/dev/null 2>&1 && OIS_PM="pkg"    ;;
     netbsd)            command -v pkgin   >/dev/null 2>&1 && OIS_PM="pkgin"  ;;

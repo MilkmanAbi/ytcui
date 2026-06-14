@@ -35,6 +35,8 @@ void Config::load() {
             graphics = j["graphics"].get<std::string>();
         if (j.contains("mode") && j["mode"].is_string())
             mode = j["mode"].get<std::string>();
+        if (j.contains("force_features") && j["force_features"].is_boolean())
+            force_features = j["force_features"].get<bool>();
 
         // Per-element color overrides: "colors": { "accent": 198, "title": 213 }
         if (j.contains("colors") && j["colors"].is_object()) {
@@ -66,7 +68,8 @@ void Config::save() {
         {"sort_by",        sort_by},
         {"show_thumbnails", show_thumbnails},
         {"graphics",       graphics},
-        {"mode",           mode}
+        {"mode",           mode},
+        {"force_features", force_features}
     };
 
     // Only write colors section if there are custom overrides

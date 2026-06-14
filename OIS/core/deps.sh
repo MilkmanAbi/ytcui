@@ -45,18 +45,32 @@ _ois_macos_bootstrap_pm() {
     [ "$OIS_PM" != "unknown" ] && return 0
 
     printf "\n  ${_Y}No package manager found on macOS.${_R}\n\n"
-    printf "  OIS can install one for you:\n\n"
-    printf "    1) Homebrew  (recommended — https://brew.sh)\n"
-    printf "    2) MacPorts  (https://macports.org)\n"
-    printf "    3) Skip      (I'll install dependencies manually)\n"
+    printf "  OIS can set one up for you:\n\n"
+    printf "    1) Homebrew   — install automatically (recommended)\n"
+    printf "    2) MacPorts   — download installer, then continue\n"
+    printf "    3) Skip       — I'll install dependencies manually\n"
     printf "\n  Choice [1/2/3]: "
     read -r _pm_choice
 
     case "$_pm_choice" in
         2)
-            ois_info "MacPorts must be installed manually."
-            ois_info "Download: https://macports.org/install.php"
-            ois_die "Install MacPorts then re-run install.sh"
+            _macos_ver="$(sw_vers -productVersion 2>/dev/null)"
+            ois_info "Opening the MacPorts download page in your browser..."
+            open "https://www.macports.org/install.php" 2>/dev/null || true
+            printf "\n  Download and run the MacPorts .pkg installer for macOS ${_macos_ver}.\n"
+            printf "  When done, press Enter to continue...\n"
+            read -r _
+            # Try to pick up the newly installed port command
+            for _portbin in /opt/local/bin/port /usr/local/bin/port; do
+                [ -x "$_portbin" ] && PATH="$(dirname "$_portbin"):$PATH" && break
+            done
+            if command -v port >/dev/null 2>&1; then
+                OIS_PM="macports"
+                export OIS_PM
+                ois_ok "MacPorts detected"
+            else
+                ois_die "MacPorts not found after installation. Try opening a new terminal and re-running install.sh"
+            fi
             ;;
         3)
             ois_warn "Skipping package manager — you'll need to install deps manually"
@@ -66,7 +80,7 @@ _ois_macos_bootstrap_pm() {
             ois_info "Installing Homebrew..."
             /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
                 || ois_die "Homebrew installation failed. Try manually: https://brew.sh"
-            # Add brew to PATH for this session
+            # Add brew to PATH for this session (arm64 = /opt/homebrew, intel = /usr/local)
             if [ -f "/opt/homebrew/bin/brew" ]; then
                 eval "$(/opt/homebrew/bin/brew shellenv)"
                 OIS_BREW_PREFIX="/opt/homebrew"
@@ -79,6 +93,27 @@ _ois_macos_bootstrap_pm() {
             ois_ok "Homebrew installed"
             ;;
     esac
+}
+
+# ── macOS: set PKG_CONFIG_PATH for keg-only Homebrew formulae ─────────────────
+# curl, ncurses, openssl@3 install to their own Cellar prefix and are NOT
+# symlinked — their .pc files are invisible to pkg-config without this.
+# Called after PM is known and any bootstrap has run.
+_ois_macos_pkgconfig_path() {
+    [ "$OIS_OS" != "macos" ] || [ "$OIS_PM" != "brew" ] && return 0
+    _bp="$(brew --prefix 2>/dev/null)" ; [ -z "$_bp" ] && return 0
+    _extra=""
+    for _f in curl ncurses "openssl@3" "openssl@1.1"; do
+        _keg="$(brew --prefix "$_f" 2>/dev/null)/lib/pkgconfig"
+        [ -d "$_keg" ] && _extra="${_extra}${_keg}:"
+    done
+    # MacPorts fallback paths (harmless if dirs don't exist)
+    _extra="${_extra}/opt/local/lib/pkgconfig:/opt/local/share/pkgconfig"
+    if [ -n "$PKG_CONFIG_PATH" ]; then
+        export PKG_CONFIG_PATH="${_extra}:${PKG_CONFIG_PATH}"
+    else
+        export PKG_CONFIG_PATH="${_extra}"
+    fi
 }
 
 # ── Xcode CLI tools (macOS build requirement) ─────────
@@ -98,6 +133,7 @@ _ois_macos_xcode() {
 ois_deps_install() {
     # macOS: ensure we have a package manager before anything else
     _ois_macos_bootstrap_pm
+    _ois_macos_pkgconfig_path
     _ois_macos_xcode
 
     [ "$OIS_DEP_COUNT" -eq 0 ] && return 0
@@ -149,6 +185,12 @@ ois_deps_install() {
         _lbl="$_name" ; [ -n "$_desc" ] && _lbl="$_name  ($_desc)"
         ois_info "Installing $_lbl..."
         if _ois_pm_install "$_pkg" >/dev/null 2>&1; then
+            # For keg-only brew formulae, update PKG_CONFIG_PATH so the next
+            # dep's pkg-config check can find the .pc file we just installed.
+            if [ "$OIS_PM" = "brew" ]; then
+                _kpc="$(brew --prefix "$_pkg" 2>/dev/null)/lib/pkgconfig"
+                [ -d "$_kpc" ] && export PKG_CONFIG_PATH="${_kpc}:${PKG_CONFIG_PATH:-}"
+            fi
             ois_ok "$_name"
         else
             # brew keg-only packages won't show up via command -v even when installed.

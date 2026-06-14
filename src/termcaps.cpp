@@ -115,15 +115,19 @@ static void parse_responses(TermCaps& c, const std::string& r) {
     }
 
     // DA1: CSI ? a;b;c ... c   -> attribute 4 means sixel.
+    // The DA1 '4' is the AUTHORITATIVE sixel signal (per VT spec; confirmed by
+    // notcurses/ucs-detect/libsixel). XTSMGRAPHICS is unreliable (xterm answers
+    // it even when built without sixel), so we only trust this.
     size_t da1 = r.find("[?");
     if (da1 != std::string::npos) {
         size_t end = r.find('c', da1);
         std::string attrs = r.substr(da1 + 2, end == std::string::npos ? std::string::npos : end - da1 - 2);
+        c.da1_seen = true;
         size_t p = 0;
         while (p < attrs.size()) {
             size_t q2 = attrs.find(';', p);
             std::string tok = attrs.substr(p, q2 == std::string::npos ? std::string::npos : q2 - p);
-            if (tok == "4") c.sixel = true;
+            if (tok == "4") { c.sixel = true; c.da1_has_sixel = true; }
             if (q2 == std::string::npos) break;
             p = q2 + 1;
         }
@@ -237,8 +241,11 @@ void TermCaps::detect() {
             set(16777216, true, true, false, false, false, false, true, true); break;
         case TermId::MLterm:
             // RGB works, but ccc does not, and COLORTERM must NOT be forced.
-            // Native sixel. Blocks depend on font.
-            set(16777216, true, false, false, true, false, false, true, true); break;
+            // Sixel is a BUILD option in mlterm (the MacPorts / SDL / framebuffer
+            // builds ship without it), and a non-sixel mlterm dumps the sixel
+            // bytes as literal text — so we must trust the DA1 '4' probe here,
+            // NOT assume. Blocks depend on the font.
+            set(16777216, true, false, false, c.sixel, false, false, true, true); break;
         case TermId::XTerm:
             // Truecolor only with --enable-direct-color; sixel only with build
             // flag (we trust the DA1 probe for sixel). Blocks depend on font.
@@ -284,6 +291,15 @@ void TermCaps::detect() {
         c.sixel = c.kitty_gfx = c.iterm_images = false;
         if (!ct_truecolor && c.colors > 256) c.colors = 256;  // needs Tc override
     }
+
+    // ── Authoritative sixel gate ──────────────────────────────────────────────
+    // The DA1 '4' attribute is ground truth. If the terminal answered DA1 but
+    // did NOT advertise sixel, force it off regardless of any per-$TERM guess —
+    // emitting sixel to a non-sixel build (e.g. a MacPorts mlterm without
+    // --with-imagelib) dumps raw escape bytes as on-screen garbage. We only
+    // keep a heuristic "true" when the terminal never answered DA1 at all
+    // (can't probe → fall back to the per-terminal default for known-good ones).
+    if (c.da1_seen && !c.da1_has_sixel) c.sixel = false;
 
     // $COLORTERM can upgrade an under-reported terminal (errs safe).
     if (ct_truecolor && c.id != TermId::MLterm) { c.truecolor = true; c.colors = 16777216; }
@@ -357,6 +373,7 @@ std::string TermCaps::summary() const {
         "  colours      : %s (%d)   ccc:%s  bce:%s  reverse-ok:%s\n"
         "  unicode      : %s (codeset: %s)   native-blocks:%s   mouse(SGR):%s\n"
         "  graphics     : sixel:%s kitty:%s iterm:%s   cell:%dx%d px\n"
+        "  sixel-probe  : DA1 seen:%s  DA1 advertised sixel(4):%s\n"
         "  kbd-protocol : %s",
         name.c_str(),
         term.empty() ? "(unset)" : term.c_str(),
@@ -364,6 +381,7 @@ std::string TermCaps::summary() const {
         ctier, colors, yn(can_change_color), yn(bce), yn(reverse_ok),
         yn(unicode), codeset.empty() ? "?" : codeset.c_str(), yn(blocks_native), yn(mouse_sgr),
         yn(sixel), yn(kitty_gfx), yn(iterm_images), cell_px_w, cell_px_h,
+        yn(da1_seen), yn(da1_has_sixel),
         kitty_keyboard ? "kitty" : "legacy");
     return buf;
 }

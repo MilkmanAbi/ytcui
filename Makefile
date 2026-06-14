@@ -48,36 +48,36 @@ else
     CXXFLAGS += -DYTUI_LINUX
 endif
 
-# ─── ncurses Detection ──────────────────────────────────────────────────────────
-# CRITICAL: Must use ncursesw (wide-char ncurses) for proper UTF-8 rendering.
+# ─── macOS: prime PKG_CONFIG_PATH for keg-only Homebrew + MacPorts ─────────────
+# Homebrew's curl, ncurses, openssl@3 are ALL keg-only — they install into the
+# Cellar but are NOT symlinked into /opt/homebrew (or /usr/local) and their .pc
+# files are NOT in the default PKG_CONFIG_PATH. We must add them explicitly, or
+# pkg-config returns nothing and the build falls back to the Apple system libs.
+# MacPorts puts everything under /opt/local which *is* covered by a
+# PKG_CONFIG_PATH addition. We do this once here, before any pkg-config call.
+ifeq ($(OS_TYPE),macos)
+    BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+    # Append keg-only formula pc paths (brew --prefix <formula> gives the keg path)
+    BREW_PKG_CONFIG_PATHS := \
+        $(shell brew --prefix curl     2>/dev/null)/lib/pkgconfig \
+        $(shell brew --prefix ncurses  2>/dev/null)/lib/pkgconfig \
+        $(shell brew --prefix openssl@3 2>/dev/null)/lib/pkgconfig \
+        $(shell brew --prefix openssl@1.1 2>/dev/null)/lib/pkgconfig
+    # MacPorts adds /opt/local/lib/pkgconfig which pkg-config already knows,
+    # but make it explicit so it survives sudo environments.
+    MACPORTS_PKG_CONFIG_PATH := /opt/local/lib/pkgconfig:/opt/local/share/pkgconfig
+    # Build a colon-separated list: existing PKG_CONFIG_PATH + brew paths + macports
+    EXTRA_PC_PATH := $(subst $(eval ) ,:,$(strip $(BREW_PKG_CONFIG_PATHS))):$(MACPORTS_PKG_CONFIG_PATH)
+    export PKG_CONFIG_PATH := $(EXTRA_PC_PATH)$(if $(PKG_CONFIG_PATH),:$(PKG_CONFIG_PATH),)
+endif
 
 ifeq ($(OS_TYPE),macos)
-    # macOS: prefer, in order — pkg-config (MacPorts/Homebrew with .pc files),
-    # Homebrew's keg-only ncurses, MacPorts under /opt/local, then the Apple
-    # system ncurses (5.7) as a last resort.
-    NCURSES_CFLAGS := $(shell pkg-config --cflags ncursesw 2>/dev/null)
-    NCURSES_LIBS   := $(shell pkg-config --libs   ncursesw 2>/dev/null)
+    # PKG_CONFIG_PATH is primed above with keg-only brew paths + MacPorts.
+    # pkg-config now finds ncurses/curl/openssl regardless of which PM installed them.
+    NCURSES_CFLAGS := $(shell pkg-config --cflags ncursesw 2>/dev/null || pkg-config --cflags ncurses 2>/dev/null)
+    NCURSES_LIBS   := $(shell pkg-config --libs   ncursesw 2>/dev/null || pkg-config --libs   ncurses 2>/dev/null)
     ifeq ($(NCURSES_LIBS),)
-        BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
-        ifneq ($(BREW_PREFIX),)
-            ifneq ($(wildcard $(BREW_PREFIX)/opt/ncurses/lib/libncursesw.*),)
-                NCURSES_CFLAGS := -I$(BREW_PREFIX)/opt/ncurses/include
-                NCURSES_LIBS := -L$(BREW_PREFIX)/opt/ncurses/lib -lncursesw
-            endif
-        endif
-    endif
-    ifeq ($(NCURSES_LIBS),)
-        # MacPorts: ncurses 6 under /opt/local (libncursesw, or libncurses
-        # built with wide support).
-        ifneq ($(wildcard /opt/local/lib/libncursesw.*),)
-            NCURSES_CFLAGS := -I/opt/local/include
-            NCURSES_LIBS := -L/opt/local/lib -lncursesw
-        else ifneq ($(wildcard /opt/local/lib/libncurses.*),)
-            NCURSES_CFLAGS := -I/opt/local/include
-            NCURSES_LIBS := -L/opt/local/lib -lncurses
-        endif
-    endif
-    ifeq ($(NCURSES_LIBS),)
+        # Last resort: Apple system ncurses (5.7). Functional but no 256-colour pairs.
         NCURSES_LIBS := -lncurses
     endif
 else ifeq ($(OS_TYPE),freebsd)

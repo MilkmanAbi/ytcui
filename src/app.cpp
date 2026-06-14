@@ -69,6 +69,8 @@ App::App(Theme theme) {
 
     // Resolve thumbnail graphics protocol (see resolve_graphics()).
     resolve_graphics();
+    // Force-disable anything the terminal can't actually do (pre-ncurses pass).
+    apply_capability_overrides(/*authoritative=*/false);
     state_.logged_in = Auth::is_logged_in();
     state_.auth_browser = Auth::get_configured_browser();
     Log::write("Thumbs: %s | Auth: %s | Theme: %s",
@@ -92,9 +94,35 @@ void App::resolve_graphics() {
     if (m == "off") {
         g = Thumbnails::Gfx::None; why = "disabled by config";
     } else if (m == "sixel" || m == "kitty" || m == "iterm") {
-        // Explicit opt-in to a raster protocol. Experimental.
+        // Explicit opt-in to a raster protocol. Experimental — but still gated
+        // on the capability probe: a non-sixel terminal (e.g. a MacPorts mlterm
+        // built without --with-imagelib) renders sixel bytes as on-screen
+        // garbage, so if the runtime probe contradicts the request we refuse
+        // and fall back to block art rather than corrupt the UI.
         g = Thumbnails::parse_gfx_mode(m);
         why = "forced (experimental raster)";
+        const TermCaps& caps = TermCaps::get();
+        bool ok = true; const char* reason = "";
+        if (m == "sixel" && !caps.sixel) {
+            ok = false; reason = "terminal did not confirm sixel support (DA1 attribute 4)";
+        } else if (m == "kitty" && !caps.kitty_gfx) {
+            ok = false; reason = "terminal did not confirm the kitty graphics protocol";
+        } else if (m == "iterm" && !caps.iterm_images) {
+            ok = false; reason = "terminal is not an iTerm2-protocol terminal";
+        }
+        // force_features=true means "honour my config verbatim" — skip the
+        // capability downgrade (the user accepts the risk).
+        if (!ok && config_.force_features) {
+            Log::write("Forcing --gfx %s despite unconfirmed support "
+                       "(force_features=true)", m.c_str());
+            ok = true;
+        }
+        if (!ok) {
+            g = Thumbnails::Gfx::Blocks;
+            why = "block art";
+            Log::write("Ignoring --gfx %s: %s. Falling back to block art.", m.c_str(), reason);
+            fprintf(stderr, "ytcui: --gfx %s ignored (%s); using block art.\n", m.c_str(), reason);
+        }
     } else {
         // "blocks" (default) and "auto": always block art. Raster is NEVER
         // auto-enabled, because piping thumbnails through chafa cannot probe
@@ -143,6 +171,73 @@ void App::resolve_graphics() {
 
     Log::write("Graphics mode: %s (config=%s; %s)",
                Thumbnails::gfx_name(g), config_.graphics.c_str(), why.c_str());
+}
+
+// Force-disable features the terminal genuinely cannot do, so a weak/odd
+// terminal can never end up with a corrupted UI (no-colour block art, sixel
+// bytes dumped as text, etc.). The user can opt out with force_features=true.
+//
+// Called twice: once in the constructor with the pre-ncurses capability
+// estimate, and once from run() after ncurses reports the real colour count
+// (authoritative=true), since COLORS is only known after start_color().
+void App::apply_capability_overrides(bool authoritative) {
+    if (config_.force_features) {
+        if (authoritative)
+            Log::write("Capability auto-override disabled (force_features=true) "
+                       "— honouring config verbatim");
+        return;
+    }
+
+    const TermCaps& caps = TermCaps::get();
+
+    // ── Colour ────────────────────────────────────────────────────────────────
+    // < 8 colours (or a terminal with no colour at all) means block-art
+    // thumbnails are meaningless and any raster protocol is moot. Theming itself
+    // degrades to monochrome automatically inside ncurses.
+    bool has_colour = caps.colors >= 8;
+
+    // ── Thumbnails (chafa block art) ───────────────────────────────────────────
+    // Need: enabled in config, chafa present, and enough colour to be legible.
+    bool chafa_ok = Thumbnails::renderer_available();
+    if (state_.thumbs_available && !chafa_ok) {
+        state_.thumbs_available = false;
+        Log::write("Auto-override: thumbnails disabled (chafa not available)");
+    }
+    if (state_.thumbs_available && !has_colour) {
+        state_.thumbs_available = false;
+        Log::write("Auto-override: thumbnails disabled (terminal has < 8 colours)");
+        if (authoritative)
+            fprintf(stderr, "ytcui: thumbnails disabled — terminal has no usable colour "
+                            "(set force_features=true to override)\n");
+    }
+
+    // ── Graphics protocol ──────────────────────────────────────────────────────
+    int g = state_.gfx_mode;  // Thumbnails::Gfx
+    auto disable_raster = [&](const char* reason) {
+        // Drop to block art (or none if thumbnails are off / no colour).
+        int ng = (state_.thumbs_available && has_colour)
+                     ? (int)Thumbnails::Gfx::Blocks : (int)Thumbnails::Gfx::None;
+        if (g != ng) {
+            Log::write("Auto-override: %s -> %s (%s)",
+                       Thumbnails::gfx_name((Thumbnails::Gfx)g),
+                       Thumbnails::gfx_name((Thumbnails::Gfx)ng), reason);
+            state_.gfx_mode = ng;
+        }
+        g = ng;
+    };
+
+    if (g == (int)Thumbnails::Gfx::Sixel && !caps.sixel)
+        disable_raster("terminal did not confirm sixel support (DA1 attribute 4)");
+    else if (g == (int)Thumbnails::Gfx::Kitty && !caps.kitty_gfx)
+        disable_raster("terminal did not confirm the kitty graphics protocol");
+    else if (g == (int)Thumbnails::Gfx::Iterm && !caps.iterm_images)
+        disable_raster("terminal is not an iTerm2-protocol terminal");
+
+    // If colour is gone entirely, no graphics path makes sense.
+    if (!has_colour && state_.gfx_mode != (int)Thumbnails::Gfx::None) {
+        Log::write("Auto-override: graphics disabled (no colour)");
+        state_.gfx_mode = (int)Thumbnails::Gfx::None;
+    }
 }
 
 void App::set_graphics_mode(const std::string& mode) {
@@ -253,6 +348,10 @@ void App::enter_playlist(const std::string& playlist_id) {
 
 int App::run() {
     if (!tui_.init()) return 1;
+    // ncurses has now reported the real colour count (refine_from_ncurses);
+    // re-run the capability gate authoritatively so a terminal that turned out
+    // to have no colour gets thumbnails/graphics disabled before first render.
+    apply_capability_overrides(/*authoritative=*/true);
     state_.status_message = rgreet();
 
     while (state_.running) {

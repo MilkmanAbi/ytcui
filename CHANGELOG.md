@@ -2,6 +2,57 @@
 
 All notable changes to ytcui will be documented in this file.
 
+## [3.5.5] - 2026-06-14
+
+### Fixed
+- **No more sixel garbage in mlterm (and any non-sixel terminal).** The
+  thumbnail "character soup" some terminals showed (e.g. `^[P0;1;0q"1;1;153…`)
+  was a real sixel image being dumped as text: ytcui's detection hardcoded
+  "sixel = yes" for any terminal identifying as mlterm, but sixel is a *build
+  option* in mlterm — the MacPorts / SDL / framebuffer builds ship without it.
+  Sixel support is now gated strictly on the authoritative DA1 probe (attribute
+  `4` in the Primary Device Attributes reply), exactly as the VT spec and
+  notcurses/libsixel require. mlterm without sixel now correctly uses block art.
+- **Explicit `--gfx sixel` (and kitty/iterm) now refuse gracefully** when the
+  terminal's capability probe contradicts the request, falling back to block
+  art with a one-line notice instead of corrupting the screen.
+- Added an authoritative clamp: if a terminal answers DA1 *without* advertising
+  sixel, sixel is forced off regardless of any per-terminal heuristic.
+- `ytcui --diag` now reports the sixel probe result (`DA1 seen` / `DA1
+  advertised sixel(4)`) so this is debuggable at a glance.
+
+### Added
+- **Capability auto-override (safety net).** If the terminal genuinely can't do
+  a feature — no colour (< 8), no chafa, or a raster protocol it never confirmed
+  — ytcui now force-disables that feature even if it's enabled in config, so a
+  weak or misconfigured terminal can never end up with a corrupted UI (block art
+  with no colour, sixel bytes dumped as text, etc.). Forced `--gfx sixel`/`kitty`/
+  `iterm` falls back to block art unless the terminal positively confirmed the
+  protocol. Set `"force_features": true` in config.json to suppress the
+  auto-override and honour your settings verbatim (you accept the risk). The
+  override decisions are written to the debug log.
+
+## [3.5.4] - 2026-06-11
+
+### Fixed
+- **macOS Homebrew install actually works now.** The real root cause: OIS
+  re-execs itself through `sudo` for a system install, so the dependency phase
+  was running as **root** — and Homebrew refuses to run as root, making every
+  `brew install` fail (even though `brew install curl` works fine when you run
+  it yourself). On macOS, OIS now resolves and installs dependencies as the
+  invoking user *first*, then elevates with `sudo` only for the final copy into
+  `/usr/local/bin`. The resolved package manager and `PKG_CONFIG_PATH` are
+  carried across the privilege boundary so the build still finds everything.
+- Homebrew's `curl`, `ncurses`, `openssl@3` are keg-only — their `.pc` files
+  aren't on the default `PKG_CONFIG_PATH`. OIS now primes `PKG_CONFIG_PATH` with
+  each keg's prefix before dependency checks and the build (and updates it live
+  after each keg install), so pkg-config finds them.
+- The package-manager prompt on macOS now always asks when both Homebrew and
+  MacPorts are present, and is correctly skipped (not re-prompted as root) on
+  the elevated pass.
+- Homebrew pkg-config formula corrected to `pkgconf`; all deps gained verified
+  `.macports` port names; MacPorts bootstrap opens the installer page and waits.
+
 ## [3.5.3] - 2026-06-11
 
 ### Fixed

@@ -6,17 +6,6 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 
 <img src="Pictures/ytcui.png" alt="ytcui screenshot">
 
-> ytcui running in Windows Terminal under WSL. >_<
-
----
-
-<p align="center">
-  <img src="Pictures/ytcui-streamlined.png" alt="ytcui screenshot 1" width="359">
-  <img src="Pictures/ytcui-streamlined-3.png" alt="ytcui screenshot 3" width="359">
-</p>
-
-> ytcui in streamlined view >_O
-
 ---
 
 ## Install
@@ -24,8 +13,6 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 ```bash
 git clone https://github.com/MilkmanAbi/ytcui.git && cd ytcui && sh install.sh
 ```
-
-> 3.5.2 is unforunately a breaking update since the Install System has been replaced and updated to OIS, manually uninstalled older versions may be required via uninstalling the binary. Fortunately, ytcui updates >3.5.2 will be non breaking with OIS handling clean rebuilds hereby.
 
 Installation is handled by [OneInstallSystem (OIS)](https://github.com/MilkmanAbi/OneInstallSystem):
 it detects your OS and package manager, installs the right dependencies
@@ -71,7 +58,7 @@ ytcui --install-info   # full install details + dependency status
 
 **18 themes** with per-element colour customisation — override any UI element's colour on top of any theme, all configurable in `config.json`.
 
-> Note: ytcui-dl is very much new, I'm completely rewriting it, just slowly... Currently, ytcui-dl is not suitable if you prioritise video quality. I'm adding a lot of features to ytcui-dl, support up to 2k video on PCs, possibly 4k (still figuring stuff out). Audio should go from 128kbps to 160kbps in a future release, actively fixing bugs.
+> Notes: ytcui-dl is very much new, I'm completely rewriting it, just slowly... Currently, ytcui-dl is not suitable if you prioritise video quality. I'm adding a lot of features to ytcui-dl, support up to 2k video on PCs, possibly 4k (still figuring stuff out). Audio should go from 128kbps to 160kbps in a future release, actively fixing bugs.
 > 
 ---
 

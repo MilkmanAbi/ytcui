@@ -35,6 +35,13 @@ struct Config {
     std::string mode        = "auto";
 
     std::string sort_by     = "";
+
+    // Capability auto-override (default ON): if the terminal can't actually do
+    // a feature — no colour, no chafa, no sixel/kitty/iterm — ytcui disables it
+    // even when enabled, so a weak terminal never gets a corrupted UI. Set
+    // force_features = true in config.json to suppress this and honour your
+    // settings verbatim (you accept the risk).
+    bool force_features     = false;
     std::string filter_type = "";
     std::string filter_dur  = "";
 

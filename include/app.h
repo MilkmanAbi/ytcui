@@ -40,6 +40,10 @@ private:
     void copy_to_clipboard(const std::string& text);
     void prefetch_thumbnails();
     void resolve_graphics();
+    // Force-disable features the terminal can't actually do (colour, chafa,
+    // sixel/kitty/iterm), unless config.force_features overrides. Pass
+    // authoritative=true once ncurses has reported the real colour count.
+    void apply_capability_overrides(bool authoritative);
     void show_browser_picker();
     void show_playlist_picker();
     void enter_playlist(const std::string& playlist_id);

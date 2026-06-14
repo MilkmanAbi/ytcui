@@ -61,6 +61,8 @@ struct TermCaps {
 
     // Graphics protocols.
     bool sixel        = false;
+    bool da1_seen     = false;   // a DA1 reply was received this session
+    bool da1_has_sixel = false;  // ...and it advertised attribute 4 (sixel)
     bool kitty_gfx    = false;
     bool iterm_images = false;
     int  cell_px_w = 0, cell_px_h = 0;   // from CSI 16 t (0 = unknown)

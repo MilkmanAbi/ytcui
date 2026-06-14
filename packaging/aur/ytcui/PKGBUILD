@@ -1,16 +1,16 @@
 # Maintainer: MilkmanAbi
 # ytcui — versioned source package. This builds from a tagged release tarball.
 #
-# IMPORTANT: this requires a matching git tag to exist, e.g. `v3.5.3`. The old
+# IMPORTANT: this requires a matching git tag to exist, e.g. `v3.5.5`. The old
 # AUR package broke because it referenced `v1.0.0` which was never tagged, so
 # GitHub returned 404. Before publishing this, tag and push a release:
 #
-#     git tag -a v3.5.3 -m "v3.5.3"
-#     git push origin v3.5.3
+#     git tag -a v3.5.5 -m "v3.5.5"
+#     git push origin v3.5.5
 #
 # Then bump pkgver below to match and regenerate sha256sums with `updpkgsums`.
 pkgname=ytcui
-pkgver=3.5.3
+pkgver=3.5.5
 pkgrel=1
 pkgdesc="Fast terminal YouTube client (ncurses, mpv, built-in ytcui-dl)"
 arch=('x86_64' 'aarch64')

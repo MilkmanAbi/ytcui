@@ -20,6 +20,17 @@ export OIS_VERSION OIS_DIR PROJECT_ROOT
 . "$OIS_DIR/core/updater.sh"
 . "$OIS_DIR/core/integrate.sh"
 
+# When the macOS user-pass elevated us, reuse its resolved package manager and
+# PKG_CONFIG_PATH (so the root `make` finds the keg-only Homebrew .pc files)
+# instead of re-detecting / re-prompting as root.
+if [ "${OIS_DEPS_DONE:-0}" = "1" ]; then
+    [ -n "${OIS_PM_RESOLVED:-}" ] && OIS_PM="$OIS_PM_RESOLVED" && export OIS_PM
+    [ -n "${OIS_PKG_CONFIG_PATH_RESOLVED:-}" ] && \
+        PKG_CONFIG_PATH="$OIS_PKG_CONFIG_PATH_RESOLVED" && export PKG_CONFIG_PATH
+    [ -n "${OIS_BREW_PREFIX_RESOLVED:-}" ] && \
+        OIS_BREW_PREFIX="$OIS_BREW_PREFIX_RESOLVED" && export OIS_BREW_PREFIX
+fi
+
 # ── Sudo escalation ───────────────────────────────────
 # Re-execs as root for system-scope commands. One sudo prompt. Done.
 _ois_elevate() {
@@ -29,6 +40,21 @@ _ois_elevate() {
         ois_die "System install requires sudo or doas. Use --user to install to ~/.local/bin"
     printf "\n  ${_B}Administrator privileges required.${_R}\n"
     exec $OIS_SUDO sh "$OIS_DIR/OIS.sh" "$@"
+}
+
+# macOS: elevate while carrying the user-resolved deps environment across the
+# sudo boundary, so the root pass reuses the package manager we already set up
+# (and skips re-running brew/port as root, which would fail).
+_ois_elevate_macos() {
+    [ "$OIS_SUDO" = "none" ] && \
+        ois_die "System install requires sudo or doas. Use --user to install to ~/.local/bin"
+    printf "\n  ${_B}Administrator privileges required${_R}  ${_D}(to install into %s)${_R}\n" "$OIS_APP_INSTALL_PATH"
+    exec $OIS_SUDO env \
+        OIS_DEPS_DONE="${OIS_DEPS_DONE:-1}" \
+        OIS_PM_RESOLVED="${OIS_PM_RESOLVED:-}" \
+        OIS_PKG_CONFIG_PATH_RESOLVED="${OIS_PKG_CONFIG_PATH_RESOLVED:-}" \
+        OIS_BREW_PREFIX_RESOLVED="${OIS_BREW_PREFIX_RESOLVED:-}" \
+        sh "$OIS_DIR/OIS.sh" "$@"
 }
 
 # ── Scope ─────────────────────────────────────────────
@@ -77,9 +103,16 @@ cmd_install() {
     fi
 
     # [1/4] Deps
-    printf "${_B}[1/4] Dependencies${_R}\n"
-    ois_deps_install || ois_die "Required dependency failed — fix above and retry."
-    printf '\n'
+    if [ "${OIS_DEPS_DONE:-0}" = "1" ]; then
+        # Already resolved as the real user (macOS pre-elevation pass).
+        printf "${_B}[1/4] Dependencies${_R}\n"
+        ois_ok "Resolved as $OIS_USER  (skipping — Homebrew/MacPorts can't run as root)"
+        printf '\n'
+    else
+        printf "${_B}[1/4] Dependencies${_R}\n"
+        ois_deps_install || ois_die "Required dependency failed — fix above and retry."
+        printf '\n'
+    fi
 
     # [2/4] Build
     printf "${_B}[2/4] Build${_R}\n"
@@ -515,6 +548,25 @@ main() {
     esac
 
     _resolve_scope "$_scope"
+
+    # macOS: Homebrew REFUSES to run as root, and MacPorts deps are better
+    # resolved as the invoking user too. So for a system install we run the
+    # dependency phase (PM choice + brew/port installs) as the real user FIRST,
+    # then elevate only for the binary copy into /usr/local/bin. We hand the
+    # resolved package manager + PKG_CONFIG_PATH across the sudo boundary via
+    # environment variables so the root pass doesn't redo (and re-prompt) it.
+    if [ "$_cmd" = "install" ] && [ "$OIS_OS" = "macos" ] \
+       && [ "$OIS_SCOPE" = "system" ] && [ "$OIS_IS_ROOT" != "yes" ]; then
+        printf "${_B}[1/4] Dependencies${_R}  ${_D}(as %s — Homebrew/MacPorts must not run as root)${_R}\n" "$OIS_USER"
+        ois_deps_install || ois_die "Required dependency failed — fix above and retry."
+        printf '\n'
+        # Pass the resolved environment into the elevated re-exec.
+        OIS_DEPS_DONE=1 \
+        OIS_PM_RESOLVED="$OIS_PM" \
+        OIS_PKG_CONFIG_PATH_RESOLVED="${PKG_CONFIG_PATH:-}" \
+        OIS_BREW_PREFIX_RESOLVED="${OIS_BREW_PREFIX:-}" \
+            _ois_elevate_macos "$@"
+    fi
 
     # Elevate for write-requiring commands
     case "$_cmd" in
