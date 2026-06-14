@@ -4,7 +4,7 @@ A fast, beautiful terminal YouTube client — search, play, and manage videos wi
 
 Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in) or **yt-dlp**.
 
-<img src="Pictures/ytcui.png" alt="ytcui screenshot">
+<img src="Pictures/ytcui-new.png" alt="ytcui screenshot">
 
 > ytcui running in Windows Terminal under WSL. >_<
 
