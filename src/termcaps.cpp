@@ -15,6 +15,13 @@
 
 namespace ytui {
 
+// User override: --mlterm / config "force_mlterm". When set before detect(),
+// the terminal is treated as mlterm (id + mono_hardening) no matter what the
+// runtime probes say — for an mlterm that didn't self-identify, or any terminal
+// with the same bold-as-reverse / sixel-as-text quirks.
+static bool s_force_mlterm = false;
+void TermCaps::set_force_mlterm(bool on) { s_force_mlterm = on; }
+
 static std::string env_str(const char* k) {
     const char* v = getenv(k);
     return v ? std::string(v) : std::string();
@@ -179,7 +186,13 @@ void TermCaps::detect() {
     }
 
     // Cheap, reliable env signals (don't need a tty).
-    if (tp == "Apple_Terminal")            { c.id = TermId::AppleTerminal; }
+    // mlterm exports MLTERM=<version> no matter what $TERM is — and it usually
+    // leaves $TERM as xterm / xterm-256color, so $TERM alone misses it. This env
+    // var is the authoritative mlterm signal, so it goes first. Not trusted
+    // through a multiplexer (tmux/screen is what's actually interpreting our
+    // escapes then, not mlterm).
+    if (!c.in_multiplexer && !env_str("MLTERM").empty()) { c.id = TermId::MLterm; }
+    else if (tp == "Apple_Terminal")            { c.id = TermId::AppleTerminal; }
     else if (tp == "iTerm.app")            { c.id = TermId::ITerm2; }
     else if (!env_str("KITTY_WINDOW_ID").empty() || lc_term.find("kitty") != std::string::npos)
                                             c.id = TermId::Kitty;
@@ -304,6 +317,22 @@ void TermCaps::detect() {
     // $COLORTERM can upgrade an under-reported terminal (errs safe).
     if (ct_truecolor && c.id != TermId::MLterm) { c.truecolor = true; c.colors = 16777216; }
 
+    // ── Strict-monochrome hardening ───────────────────────────────────────────
+    // mlterm renders A_BOLD/A_DIM as reverse-video blocks and dumps sixel bytes
+    // as literal text on no-imagelib builds, so any colour/emphasis/thumbnail
+    // turns the UI to garbage. When mlterm is the actual terminal — or the user
+    // forced it — we drive a pure black & white, no-emphasis, no-thumbnail mode.
+    // The user-force path also pins id = MLterm so every downstream check that
+    // keys off the terminal identity (e.g. the bold/dim strip in tui.cpp) fires.
+    if (s_force_mlterm) c.id = TermId::MLterm;
+    c.mono_hardening = (c.id == TermId::MLterm);
+    if (c.mono_hardening) {
+        // Belt and braces: a hardened terminal never advertises a usable raster
+        // protocol to the rest of the app, so no sixel/kitty/iterm bytes are
+        // ever emitted even if some probe flickered true.
+        c.sixel = c.kitty_gfx = c.iterm_images = false;
+    }
+
     if (c.name == "unknown") c.name = c.id_name();
 }
 
@@ -374,6 +403,7 @@ std::string TermCaps::summary() const {
         "  unicode      : %s (codeset: %s)   native-blocks:%s   mouse(SGR):%s\n"
         "  graphics     : sixel:%s kitty:%s iterm:%s   cell:%dx%d px\n"
         "  sixel-probe  : DA1 seen:%s  DA1 advertised sixel(4):%s\n"
+        "  mono-harden  : %s%s\n"
         "  kbd-protocol : %s",
         name.c_str(),
         term.empty() ? "(unset)" : term.c_str(),
@@ -382,6 +412,8 @@ std::string TermCaps::summary() const {
         yn(unicode), codeset.empty() ? "?" : codeset.c_str(), yn(blocks_native), yn(mouse_sgr),
         yn(sixel), yn(kitty_gfx), yn(iterm_images), cell_px_w, cell_px_h,
         yn(da1_seen), yn(da1_has_sixel),
+        yn(mono_hardening),
+        mono_hardening ? "  (B&W, no emphasis, no thumbnails)" : "",
         kitty_keyboard ? "kitty" : "legacy");
     return buf;
 }

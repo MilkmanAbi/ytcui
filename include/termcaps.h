@@ -55,6 +55,17 @@ struct TermCaps {
     bool unicode    = true;          // UTF-8 locale: multibyte glyphs are safe
     std::string codeset;             // nl_langinfo(CODESET), e.g. "UTF-8"
 
+    // Strict-monochrome hardening. True when this terminal must be driven in
+    // pure black & white with no per-element colour, no bold/dim emphasis, no
+    // coloured selection bar and NO thumbnails of any kind (neither raster nor
+    // chafa block art). Set on detection for mlterm — which renders A_BOLD/A_DIM
+    // as reverse-video blocks (highlight garbage) and dumps sixel bytes as
+    // literal text on its no-imagelib builds — and can also be forced on by the
+    // user (--mlterm / "force_mlterm" in config) for an mlterm that wasn't
+    // auto-identified, or any terminal with the same quirks. This is a terminal
+    // compatibility decision, independent of the colour theme the user picked.
+    bool mono_hardening = false;
+
     // Input.
     bool mouse_sgr      = true;      // SGR (1006) mouse reporting
     bool kitty_keyboard = false;     // kitty keyboard disambiguation protocol
@@ -73,6 +84,11 @@ struct TermCaps {
 
     // ---- API ----
     static TermCaps& get();
+    // Force strict-monochrome mlterm hardening on, regardless of detection.
+    // Call BEFORE detect() (e.g. from the --mlterm flag handler): detect() then
+    // treats the terminal as mlterm (id + mono_hardening) so every code path
+    // hardens uniformly.
+    static void set_force_mlterm(bool on = true);
     // Run identification queries + env analysis. Call ONCE before ncurses
     // init (it puts the tty in raw mode briefly to read query replies).
     static void detect();

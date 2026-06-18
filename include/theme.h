@@ -49,6 +49,10 @@ enum class Theme {
     Mint,
     Coral,
     Slate,
+    MLterm,   // strictly black & white: no per-element colour, plain
+              // reverse-video selection, no bold/dim emphasis, no thumbnails.
+              // Selectable anywhere as a pure no-colour mode; also force-applied
+              // automatically when ytcui detects it is running inside mlterm.
     Custom,   // user-defined via config [colors] — do not use directly
 };
 
@@ -72,6 +76,7 @@ inline std::string theme_to_string(Theme t) {
         case Theme::Mint:      return "mint";
         case Theme::Coral:     return "coral";
         case Theme::Slate:     return "slate";
+        case Theme::MLterm:    return "mlterm";
         case Theme::Custom:    return "custom";
         default:               return "default";
     }
@@ -97,6 +102,8 @@ inline Theme string_to_theme(const std::string& s) {
     if (l == "mint")                                              return Theme::Mint;
     if (l == "coral")                                             return Theme::Coral;
     if (l == "slate" || l == "steel")                             return Theme::Slate;
+    if (l == "mlterm" || l == "mono" || l == "monochrome" ||
+        l == "bw" || l == "blackwhite" || l == "black-white")     return Theme::MLterm;
     if (l == "custom")                                            return Theme::Custom;
     return Theme::Default;
 }
@@ -252,6 +259,17 @@ inline ThemeColors get_theme_colors(Theme theme) {
                  .published=146, .bookmark=153, .desc=253 };
         // 189=periwinkle-mist, 153=light blue-gray, 152=cadet blue-light
         // 146=light slate blue, 195=alice blue, 253=light gray
+
+    // MLTERM — strictly black & white. Every element is -1 (terminal default
+    // fg/bg): no title/channel/stats/tag/border/etc colour differentiation at
+    // all. Selection is NOT a coloured bar (tui.cpp forces plain reverse-video
+    // when mono), and thumbnails are disabled entirely (no raster, no chafa),
+    // so nothing on screen ever uses colour.
+    case Theme::MLterm:
+        return { .bg=-1, .search_box=-1, .title=-1, .channel=-1, .stats=-1,
+                 .selected=-1, .action=-1, .action_sel=-1, .status=-1,
+                 .border=-1, .header=-1, .accent=-1, .tag=-1,
+                 .published=-1, .bookmark=-1, .desc=-1 };
 
     // Custom: not returned here, handled in app.cpp
     case Theme::Custom:

@@ -74,7 +74,8 @@ App::App(Theme theme) {
     state_.logged_in = Auth::is_logged_in();
     state_.auth_browser = Auth::get_configured_browser();
     Log::write("Thumbs: %s | Auth: %s | Theme: %s",
-        state_.thumbs_available ? "yes (chafa)" : "no (chafa missing!)",
+        state_.thumbs_available ? "yes (chafa)"
+            : Thumbnails::renderer_available() ? "no (disabled)" : "no (chafa missing!)",
         state_.logged_in ? state_.auth_browser.c_str() : "none",
         theme_to_string(state_.theme).c_str());
 }
@@ -181,14 +182,32 @@ void App::resolve_graphics() {
 // estimate, and once from run() after ncurses reports the real colour count
 // (authoritative=true), since COLORS is only known after start_color().
 void App::apply_capability_overrides(bool authoritative) {
+    const TermCaps& caps = TermCaps::get();
+
+    // ── mlterm hardening (non-negotiable) ──────────────────────────────────────
+    // Runs BEFORE the force_features escape hatch: on a terminal that renders
+    // sixel as text and bold as reverse-video garbage, "honour my config
+    // verbatim" must not be allowed to re-enable thumbnails or raster. This
+    // also fires for the MLterm colour theme so chafa is never even spawned.
+    bool mono = caps.mono_hardening || state_.theme == Theme::MLterm;
+    if (mono) {
+        if (state_.thumbs_available) {
+            state_.thumbs_available = false;
+            Log::write("mlterm hardening: thumbnails disabled (strict B&W, no "
+                       "raster or block art)");
+        }
+        if (state_.gfx_mode != (int)Thumbnails::Gfx::None) {
+            state_.gfx_mode = (int)Thumbnails::Gfx::None;
+            Log::write("mlterm hardening: graphics forced off");
+        }
+    }
+
     if (config_.force_features) {
         if (authoritative)
             Log::write("Capability auto-override disabled (force_features=true) "
                        "— honouring config verbatim");
         return;
     }
-
-    const TermCaps& caps = TermCaps::get();
 
     // ── Colour ────────────────────────────────────────────────────────────────
     // < 8 colours (or a terminal with no colour at all) means block-art

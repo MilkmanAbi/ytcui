@@ -430,6 +430,19 @@ static int run_injectconfig(const std::vector<std::string>& pairs, const Ansi& C
     bool any_set = false;
 
     for (const auto& pair : pairs) {
+        // Bare shorthand: `--injectconfig mlterm` (also mono / bw) persists the
+        // strict black & white mlterm theme without needing key=value syntax.
+        if (pair == "mlterm" || pair == "mono" || pair == "bw") {
+            cfg.theme_name = "mlterm";
+            printf("  %sset%s theme = mlterm (strict B&W, no thumbnails/emphasis)\n",
+                   C.GREEN, C.RESET);
+            printf("  %snote%s: ytcui already auto-detects mlterm at startup, so this\n"
+                   "        is only needed if you want black & white on every terminal\n"
+                   "        (it will also drop colour on non-mlterm terminals).\n",
+                   C.YELLOW, C.RESET);
+            any_set = true;
+            continue;
+        }
         size_t eq = pair.find('=');
         if (eq == std::string::npos) {
             fprintf(stderr, "%sError%s: invalid format '%s' — expected key=value\n",
@@ -504,6 +517,9 @@ static void print_help(const Ansi&) {
         "    -v, --version               show version\n"
         "    -t, --theme <name>          set color theme\n"
         "    -g, --grayscale             grayscale theme (legacy)\n"
+        "    --mlterm                    treat terminal as mlterm: strict B&W, no\n"
+        "                                highlighting/bold, no thumbnails (compat)\n"
+        "    --mono, --bw                strict black & white colour theme\n"
         "    --gfx <mode>                thumbnail mode: auto|blocks|sixel|kitty|iterm|off\n"
         "    --mode <mode>               UI mode: auto|normal|streamlined (auto = music-player UI when narrow)\n"
         "    --colors                    list all color elements + config example\n"
@@ -557,6 +573,15 @@ static void print_help(const Ansi&) {
         "    ytcui --theme dracula\n"
         "    ytcui --volume 50\n"
         "    ytcui --injectconfig max_results=25 theme=nord\n"
+        "\n"
+        "MLTERM COMPAT\n"
+        "    mlterm is auto-detected at startup (it can't render colour themes,\n"
+        "    bold, or thumbnails without garbling), so on mlterm ytcui drops to\n"
+        "    strict black & white automatically while other terminals keep their\n"
+        "    colours and thumbnails. No setup needed. If your mlterm somehow isn't\n"
+        "    detected, or you just want black & white everywhere:\n"
+        "    ytcui --mlterm                 force strict B&W for this run\n"
+        "    ytcui --injectconfig mlterm    make strict B&W the saved default\n"
         "\n",
         ytui::VERSION
     );
@@ -637,6 +662,11 @@ int main(int argc, char* argv[]) {
     // ── --diag: full system diagnostic (early exit, no TUI) ───────────────
     for (auto& a : args) {
         if (a == "--diag") {
+            // Let --mlterm influence the diagnostic too (it forces the terminal
+            // identity before detection), so `ytcui --mlterm --diag` shows the
+            // hardened result.
+            for (auto& b : args)
+                if (b == "--mlterm") ytui::TermCaps::set_force_mlterm(true);
             run_diag(C);
             return 0;
         }
@@ -681,7 +711,8 @@ int main(int argc, char* argv[]) {
             printf("  }\n\n");
             printf("  %sAvailable themes:%s\n", C.BOLD, C.RESET);
             printf("    default, grayscale, nord, dracula, solarized, monokai, gruvbox, tokyo\n");
-            printf("    pink, green, blue, purple, red, amber, ocean, mint, coral, slate\n\n");
+            printf("    pink, green, blue, purple, red, amber, ocean, mint, coral, slate\n");
+            printf("    mlterm (strictly black & white, no colour, reverse-video selection)\n\n");
             printf("  %s256-colour reference:%s https://www.ditig.com/256-colors-cheat-sheet\n\n", C.BOLD, C.RESET);
             return 0;
         }
@@ -726,6 +757,17 @@ int main(int argc, char* argv[]) {
             theme = ytui::string_to_theme(args[++i]);
         } else if (a == "--grayscale" || a == "-g") {
             theme = ytui::Theme::Grayscale;
+        } else if (a == "--mlterm") {
+            // "This is mlterm" — select the B&W theme AND force terminal
+            // hardening (bold/dim strip, no thumbnails) even if auto-detection
+            // didn't identify it. Must be set before TermCaps::detect() runs.
+            theme = ytui::Theme::MLterm;
+            ytui::TermCaps::set_force_mlterm(true);
+        } else if (a == "--mono" || a == "--bw") {
+            // Pure black & white colour theme. On a real mlterm, detect() still
+            // applies the full hardening; on a colour terminal this just drops
+            // all colour (bold/emphasis is left intact — it renders fine there).
+            theme = ytui::Theme::MLterm;
         } else if (a == "--debug" || a == "-d") {
             debug = true;
         } else if (a == "--logdump") {

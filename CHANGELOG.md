@@ -2,6 +2,40 @@
 
 All notable changes to ytcui will be documented in this file.
 
+## [3.5.6] - 2026-06-18
+
+### Added
+- **Strict mlterm hardening.** When ytcui detects it is running inside mlterm —
+  or you pass `--mlterm` (also `--mono` / `--bw`, or set `"theme": "mlterm"`) —
+  the UI is driven in pure black & white with no per-element colour, no
+  bold/dim emphasis (mlterm renders those as reverse-video blocks, which is the
+  "highlight glitching" some builds showed), plain reverse-video selection
+  instead of a coloured bar, and **no thumbnails of any kind** — neither sixel
+  nor chafa block art, so the bytes that garble a no-imagelib mlterm are never
+  emitted. The active tab is marked with brackets (`[Results]`) so you can still
+  see which menu you are on without relying on colour or bold.
+- New `--mlterm` flag (treat the terminal as mlterm and harden fully, even if it
+  did not self-identify) and `--mono` / `--bw` aliases for the black & white
+  `mlterm` theme. `ytcui --diag` now reports a `mono-harden` line.
+- `--injectconfig mlterm` (also `mono` / `bw`) saves the strict B&W mlterm theme
+  as the default, for users who want black & white on every terminal.
+
+### Changed
+- **mlterm is now reliably auto-detected.** Detection also keys off the `MLTERM`
+  environment variable, which mlterm always exports — it usually leaves `$TERM`
+  as `xterm`/`xterm-256color`, so the old `$TERM`-only check missed stock mlterm
+  setups. The same install now adapts per terminal automatically: colours and
+  thumbnails on a normal terminal (WSL, xterm, etc.), strict black & white the
+  moment you open mlterm, with no flags or config. The `MLTERM` signal is
+  ignored inside tmux/screen, where the multiplexer is what renders.
+- mlterm hardening is decided in one place (`TermCaps::mono_hardening`) and is
+  **non-negotiable**: it is applied before the `force_features` escape hatch, so
+  "honour my config verbatim" can never re-enable thumbnails or raster on a
+  terminal that would render them as garbage.
+- The debug log no longer claims "chafa missing" when thumbnails were disabled
+  for some other reason (e.g. hardening); it now distinguishes "disabled" from
+  an actually-absent chafa.
+
 ## [3.5.5] - 2026-06-14
 
 ### Fixed

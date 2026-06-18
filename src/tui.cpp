@@ -11,6 +11,28 @@
 
 namespace ytui {
 
+// ─── mlterm bold/dim-as-reverse quirk ────────────────────────────────────────
+// On a real mlterm with no distinct bold font configured, ncurses A_BOLD (and
+// A_DIM) doesn't change font weight — mlterm substitutes a reverse-video block
+// to make the text "stand out", since it has no bold glyphs to draw. Every
+// place in this file that uses A_BOLD/A_DIM purely for emphasis (panel headers,
+// the active tab, dimmed hints/footers — none of which are a "selected item")
+// would turn into an unwanted highlight box. There's no terminfo bit for this,
+// so when mlterm is the actual detected/forced terminal we strip those two bits
+// from every attron/attroff call below via macro interception. A_REVERSE is
+// left alone: TermCaps trusts it on mlterm (reverse_ok=true) and it's the one
+// attribute that's supposed to look like a block — that's the selection cursor,
+// not decoration. The flag is refreshed each frame from TermCaps (single source
+// of truth), so nothing here keeps its own copy of the terminal identity.
+static bool g_strip_emphasis = false;
+static inline chtype mlterm_fx_filter(chtype a) {
+    return g_strip_emphasis ? (a & ~(chtype)(A_BOLD | A_DIM)) : a;
+}
+#undef attron
+#undef attroff
+#define attron(a)  wattron(stdscr, mlterm_fx_filter((chtype)(a)))
+#define attroff(a) wattroff(stdscr, mlterm_fx_filter((chtype)(a)))
+
 // ─── UTF-8 helpers ───────────────────────────────────────────────────────────
 //
 // Root cause of the M-hM-... mojibake was twofold:
@@ -198,6 +220,10 @@ void TUI::init_thumb_colors() {
 // All output goes through ncurses mvaddstr/attron — erase() owns and clears it.
 void TUI::draw_thumb(const std::string& video_id,
                      int x, int y, int cols, int rows, int bot) {
+    // Strict-monochrome mode draws no thumbnail at all — not raster, not chafa
+    // block art. Emitting either is what garbles a no-imagelib mlterm, so the
+    // safest thing is to render nothing and let the layout reclaim the space.
+    if (mono_mode_) return;
     // Raster protocols: don't paint block art. Record the region and let
     // flush_graphics() draw the real image after refresh(). Leaving the cells
     // blank means the image sits cleanly in the panel.
@@ -292,6 +318,12 @@ void TUI::setup_colors(const AppState& state) {
     // erase with the default bg, so clrtoeol/bkgd can't be trusted to paint it).
     short bar_bg = tc.selected >= 0 ? tc.selected : tc.accent;
     init_pair(Color::SELECTED_BAR, selbar_fg(bar_bg), bar_bg);
+
+    // Strict-monochrome mode: never use a coloured selection bar. sel_attr()
+    // falls back to plain A_REVERSE — the universal, colour-free "this row is
+    // selected" convention, and the only one guaranteed legible on mlterm.
+    if (mono_mode_) sel_use_color_ = false;
+    else            sel_use_color_ = has_colors() && TermCaps::get().colors >= 8;
 }
 
 void TUI::get_dimensions(int& w, int& h) { getmaxyx(stdscr, h, w); }
@@ -309,7 +341,21 @@ void TUI::paint_sel_bar(int y, int x, int w) {
 
 // ─── Top-level render ─────────────────────────────────────────────────────────
 void TUI::render(const AppState& state, const Library* lib) {
-    gfx_mode_ = state.gfx_mode;
+    // Strict-monochrome mode is in effect when the user picked the MLterm theme
+    // OR the terminal was detected/forced as mlterm. Both converge here so the
+    // hardening is identical either way.
+    const TermCaps& caps = TermCaps::get();
+    mono_mode_ = (state.theme == Theme::MLterm) || caps.mono_hardening;
+    // Strip the bold/dim-as-reverse emphasis quirk whenever mono mode is active.
+    // On a real mlterm this prevents the reverse-video garble; with the MLterm
+    // theme on a colour terminal it simply honours the theme's contract ("no
+    // bold/dim emphasis") — flat output is the whole point of choosing it.
+    g_strip_emphasis = mono_mode_;
+    // Monochrome means NO thumbnails of any kind — not raster, not even chafa
+    // block art (its bytes are exactly what garbles a no-imagelib mlterm). The
+    // app layer already forces gfx off when hardened; this is the render-side
+    // guarantee that no image path runs regardless of state.gfx_mode.
+    gfx_mode_ = mono_mode_ ? (int)Thumbnails::Gfx::None : state.gfx_mode;
     pending_gfx_.clear();
     setup_colors(state);
     erase();
@@ -464,13 +510,18 @@ void TUI::draw_tabs(const AppState& state) {
         if (is_results_tab && !act) bc = Color::BORDER;
         if (tf && act) bc = Color::ACCENT;
         draw_box(y, tx, 3, tw, bc);
-        int ll = (int)strlen(lb[i]);
+        // In mono mode neither colour nor bold can mark the active tab, so wrap
+        // its label in brackets — the active one reads as "[Results]" while the
+        // rest stay plain. This is the colour-free "you are here" indicator.
+        std::string lbl = lb[i];
+        if (mono_mode_ && act) lbl = "[" + lbl + "]";
+        int ll = (int)lbl.size();
         int lx = tx + (tw - ll) / 2;
         if (lx < 0 || lx + ll > state.term_w) continue;
         if (act) attron(COLOR_PAIR(Color::STATS) | A_BOLD);
         else if (is_results_tab) attron(COLOR_PAIR(Color::ACCENT));
         else attron(COLOR_PAIR(Color::BG));
-        mvprintw(y + 1, lx, "%s", lb[i]);
+        mvprintw(y + 1, lx, "%s", lbl.c_str());
         if (act) attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
         else if (is_results_tab) attroff(COLOR_PAIR(Color::ACCENT));
         else attroff(COLOR_PAIR(Color::BG));

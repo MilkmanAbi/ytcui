@@ -44,6 +44,12 @@ private:
     // width via explicit spaces, never via clrtoeol/bkgd (bce is unreliable).
     bool sel_use_color_ = true;
     bool mouse_enabled_ = false;
+    // True for the active frame when strict-monochrome mode is in effect — i.e.
+    // the MLterm theme is selected OR the terminal was detected/forced as mlterm
+    // (TermCaps::mono_hardening). Forces plain reverse-video selection (no
+    // coloured bar) and suppresses all thumbnails, regardless of what the
+    // terminal can actually do. Set once per frame at the top of render().
+    bool mono_mode_ = false;
     chtype sel_attr() const {
         return sel_use_color_ ? COLOR_PAIR(Color::SELECTED_BAR) : (chtype)A_REVERSE;
     }
