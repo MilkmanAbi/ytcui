@@ -2,6 +2,22 @@
 
 All notable changes to ytcui will be documented in this file.
 
+## [3.5.7] - 2026-06-18
+
+### Fixed
+- **Auto-detected mlterm now goes fully black & white.** When mlterm was
+  detected (rather than selected via the `mlterm` theme), the colour-forcing was
+  incomplete: the selection bar, thumbnails and bold were hardened, but ordinary
+  text kept whatever the configured theme used (e.g. cyan titles), so colour
+  leaked through on a terminal that can't render it cleanly. The strict-mono
+  palette is now applied whenever mono mode is active for any reason — detection,
+  `--mlterm`, or the `mlterm` theme — so detected mlterm looks identical to the
+  explicit theme. This affected the streamlined (narrow) UI as well as the full
+  layout. Colour terminals are completely unaffected.
+- The `--debug` log now records why a frame is (or isn't) black & white —
+  detected/forced mlterm vs the `mlterm` theme vs colour mode — logged only when
+  the state changes, to make terminal-specific behaviour easy to diagnose.
+
 ## [3.5.6] - 2026-06-18
 
 ### Added

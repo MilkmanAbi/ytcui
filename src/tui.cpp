@@ -2,6 +2,7 @@
 #include "thumbs.h"
 #include "theme.h"
 #include "termcaps.h"
+#include "log.h"
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -293,7 +294,14 @@ static short selbar_fg(short bg) {
 
 void TUI::setup_colors(const AppState& state) {
     // resolved_colors is pre-computed by App: base theme + custom overrides.
-    const ThemeColors& tc = state.resolved_colors;
+    // In strict-monochrome mode (MLterm theme OR a detected/forced mlterm) every
+    // element must be the terminal default — otherwise an auto-detected mlterm
+    // keeps a non-mlterm theme's colours (e.g. cyan titles) and only the
+    // selection bar/thumbnails get hardened, leaking colour the terminal can't
+    // render cleanly. Substituting the all-default MLterm palette here makes the
+    // colour-forcing independent of which theme happens to be configured.
+    const ThemeColors& tc = mono_mode_ ? get_theme_colors(Theme::MLterm)
+                                       : state.resolved_colors;
 
     init_pair(Color::BG,         tc.bg,         -1);
     init_pair(Color::SEARCH_BOX, tc.search_box, -1);
@@ -356,6 +364,26 @@ void TUI::render(const AppState& state, const Library* lib) {
     // app layer already forces gfx off when hardened; this is the render-side
     // guarantee that no image path runs regardless of state.gfx_mode.
     gfx_mode_ = mono_mode_ ? (int)Thumbnails::Gfx::None : state.gfx_mode;
+
+    // Diagnostic: log only when the mono state flips, so a --debug log makes it
+    // obvious WHY a terminal is (or isn't) black & white — detection vs theme vs
+    // force — without spamming a line every frame.
+    {
+        static int last_mono = -1;
+        int cur = mono_mode_ ? 1 : 0;
+        if (cur != last_mono) {
+            last_mono = cur;
+            if (mono_mode_)
+                Log::write("Render: strict B&W mode ON (%s)",
+                           caps.mono_hardening
+                               ? (state.theme == Theme::MLterm
+                                      ? "mlterm theme + detected/forced mlterm"
+                                      : "detected/forced mlterm")
+                               : "MLterm theme selected");
+            else
+                Log::write("Render: colour mode (theme honoured, no mlterm)");
+        }
+    }
     pending_gfx_.clear();
     setup_colors(state);
     erase();
