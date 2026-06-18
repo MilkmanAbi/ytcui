@@ -51,7 +51,7 @@ ytcui --install-info   # full install details + dependency status
 
 ---
 
-## What's new in v3.5.2
+## What's new in >v3.5.2
 
 **Rock-solid now** — the teardown crash some terminals hit on quit (a heap use-after-free from detached worker threads outliving the curl client) is gone, and every AddressSanitizer / undefined-behaviour issue found since 3.0.0 has been fixed. Quitting, fast searching, and rapid navigation are all clean under ASan.
 
