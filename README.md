@@ -2,7 +2,7 @@
 
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
-Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in, experimental youtube client) or the mature **yt-dlp**.
+Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in, experimental YouTube client) or the mature **yt-dlp**.
 
 <img src="Pictures/ytcui-new.png" alt="ytcui screenshot">
 
@@ -19,24 +19,27 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 
 ---
 
+## ⚠️ 4.0.0 is a breaking update — manual migration required
+
+**If you have ytcui < 4.0.0 installed, you must uninstall it manually before upgrading.** The install system changed from OIS v1 to OIS v4 and the two are not compatible. Find and delete the old binary (usually `/usr/local/bin/ytcui` or `~/.local/bin/ytcui`) and any leftover `~/.local/bin/.ytcui-ois` shim, then run the new installer fresh. Updates *from* 4.0.0 onward are handled cleanly by OIS with no manual steps. OIS v4 onwards are backwards compatible, handling updates cleaner and safer.
+
+---
+
 ## Install
 
 ```bash
 git clone https://github.com/MilkmanAbi/ytcui.git && cd ytcui && sh install.sh
 ```
 
-> ⚠️ **4.0.0 is a breaking update since the Install System has been replaced and updated from OISv1 to OISv4, manually uninstalling older versions IS required via uninstalling the binary. Fortunately, ytcui updates >4.0.0 will be non breaking with OIS handling clean rebuilds hereby.**
+The installer walks you through a short setup Q&A — package manager (Homebrew or MacPorts on macOS), video backend, colour theme, and mpv hardware acceleration — then hands off to OIS which builds from source and installs to your PATH. On macOS it offers to bootstrap Homebrew or fetch the right MacPorts `.pkg` if neither is installed.
 
-Installation is handled by [OneInstallSystem (OIS)](https://github.com/MilkmanAbi/OneInstallSystem):
-it detects your OS and package manager, installs the right dependencies
-(verified per-distro), builds from source, and installs to your PATH. Manage it
-afterwards with:
+Manage your install afterwards with:
 
 ```bash
 ytcui --ois            # status + update panel
 ytcui --update         # update to the latest version
 ytcui --reinstall      # clean rebuild from source
-ytcui --uninstall      # remove cleanly (with a generated uninstaller)
+ytcui --uninstall      # remove cleanly
 ytcui --install-info   # full install details + dependency status
 ```
 
@@ -47,51 +50,105 @@ ytcui --install-info   # full install details + dependency status
 | **Linux** | apt, pacman, dnf, yum, zypper, apk, emerge, xbps | Full support |
 | **macOS** | Homebrew or MacPorts | Auto-installs either if needed |
 | **FreeBSD** | pkg | Native `procctl` support |
+| **NetBSD** | pkgin | |
+| **OpenBSD** | pkg_add | |
+| **Illumos/OmniOS** | ips (pkg) | |
 | **WSL2** | (same as Linux) | Works great |
 
 ---
 
-## What's new in >v3.5.2
+## What's new in 4.0.0
 
-**Rock-solid now** — the teardown crash some terminals hit on quit (a heap use-after-free from detached worker threads outliving the curl client) is gone, and every AddressSanitizer / undefined-behaviour issue found since 3.0.0 has been fixed. Quitting, fast searching, and rapid navigation are all clean under ASan.
+### Playback
 
-**One-command install (OIS)** — `sh install.sh` builds from source and installs across Linux, macOS and the BSDs via [OneInstallSystem](https://github.com/MilkmanAbi/OneInstallSystem). It detects your OS and package manager (apt, pacman, dnf, yum, zypper, apk, emerge, xbps, brew, macports, pkg), resolves the right *development* packages (verified per-distro, checked with pkg-config so a runtime CLI is never mistaken for build headers), and registers a clean uninstaller. Manage it afterwards with `ytcui --update`, `--reinstall`, `--uninstall`, `--install-info`, and `--ois`. The installer asks a few setup questions up front: backend (ytcui-dl / yt-dlp), streamlined mode, thumbnails, and theme.
+**Instant pause/resume.** The old approach froze the mpv process with `SIGSTOP`/`SIGCONT`, which drained the audio buffer and caused a 2–3 second stall on resume. 4.0.0 replaces this with mpv's JSON IPC socket: pause is now codec-level and takes effect in under a frame. `Space` or `p`, from anywhere.
 
-**Streamlined mode** — on very narrow terminals ytcui automatically switches to a dense, themed, minimalist music-player UI: an iPod-style section menu (Search · Library · Playlists · Feed · History), compact lists, a Play video / Play audio chooser, and a now-playing card with album-art thumbnail, waveform, time and transport controls. It's conservative — the default is always the full UI, and it only switches when the terminal reports a reliably narrow width. Force it with `--mode auto|normal|streamlined`.
+**Volume and seeking.** `+`/`-` adjust volume ±5%, `<`/`>` seek ±10 seconds — all via IPC, all instant, all global. Requested in issue #4.
 
-**Real terminal detection** — instead of guessing from `$TERM`, ytcui now identifies the terminal at startup with a batched, timeout-bounded query handshake (XTVERSION, XTGETTCAP, DA1/DA2/DA3) plus environment and live terminfo, then adapts: truecolor / 256 / 16-colour tiers, sixel/kitty/iterm graphics support, native block-glyph support, and **cell-pixel size detection** for correctly scaled images. Minimal emulators that don't answer degrade safely rather than hanging. Mouse input is enabled only where it's actually supported (no more stray bytes on the Linux console), and `ytcui --diag` prints the full capability report.
+**Live progress bar.** The now-playing strip shows real elapsed/total time and a filled progress bar, polled from mpv's IPC cache every frame without blocking the UI.
 
-**Cleaner highlighting** — the selected row/tab/menu item now uses a proper full-width foreground/background bar painted with explicit spaces, with an auto-contrasting text colour, instead of reverse-video over a default background. It renders consistently across terminals (no more partial or invisible highlights), and falls back to reverse video only on sub-8-colour terminals.
+### In-app settings (Ctrl-S)
 
-**Terminal robustness** — resizing is handled cleanly (no stale cells), CJK and wide-character titles size correctly by display columns, and layout-breaking code points (control, BiDi-override, zero-width) in YouTube titles are stripped so they can't scramble a line.
+Press `Ctrl-S` (or `Ctrl-Shift-S`) from anywhere to open the live settings panel:
 
-**Playlists** — create named playlists, add videos from search results or history, reorder, remove, copy between playlists. Stored locally and persists across sessions.
+- **Theme tab** — switch between all 18 themes instantly, no restart.
+- **Accelerators tab** — highlight any action and press a new key to rebind it on the fly. Changes save to `config.json` and take effect immediately.
 
-**ytcui-dl** — a built-in InnerTube client that replaces yt-dlp entirely. Talks directly to YouTube's mobile API. Search results appear near-instantly, stream URLs are prefetched in the background while you browse. No Python, no subprocess overhead.
+Keybindings can also be set directly in `config.json` under a `"keys"` block:
 
-**18 themes** with per-element colour customisation — override any UI element's colour on top of any theme, all configurable in `config.json`.
+```json
+{
+  "keys": {
+    "search":     "/",
+    "pause":      " ",
+    "volume_up":  "+",
+    "volume_down": "-",
+    "seek_fwd":   ">",
+    "seek_back":  "<",
+    "quit":       "q"
+  }
+}
+```
 
-> Note: ytcui-dl is very much new, I'm completely rewriting it, just slowly... Currently, ytcui-dl is not suitable if you prioritise video quality. I'm adding a lot of features to ytcui-dl, support up to 2k video on PCs, possibly 4k (still figuring stuff out). Audio should go from 128kbps to 160kbps in a future release, actively fixing bugs.
-> 
+All navigation keys (`/`, `+`, `-`, `<`, `>`, `q`, etc.) are global — they work from the results list, action menus, playlists, anywhere except the search input box itself.
+
+### Shortcuts reference (?`)
+
+Press `?` to open a full keybinding reference panel. Any key dismisses it.
+
+### Theme remembered
+
+`ytcui --theme dracula` now persists to `config.json` so your next launch keeps it without the flag. Change it live any time with Ctrl-S.
+
+### Interactive installer
+
+`sh install.sh` now asks:
+
+1. **macOS only:** Homebrew or MacPorts — your choice regardless of what's installed. OIS offers to bootstrap whichever you pick if it isn't present yet.
+2. **Backend:** ytcui-dl (built-in, no deps) or yt-dlp.
+3. **Theme:** all 18, with a one-line description each.
+4. **Hardware acceleration:** on/off for mpv. The choice persists to `config.json` so it applies on every launch.
+
+Non-interactive / `--yes` / piped installs take defaults silently.
+
+### OIS v4 — new install system
+
+The old OIS v1 is replaced with OIS v4, a complete rewrite. Changes relevant to ytcui users:
+
+- **Reinstall bug fixed.** OIS v1–v3 would reject the existing binary on a reinstall-over-built-tree with a spurious `E-BUILD` error ("build succeeded but produced no executable"). OIS v4 now correctly accepts an up-to-date binary after a clean build exit.
+- **macOS/BSD install path is now robust.** Homebrew keg-only dependencies (`ncurses`, `curl`, `openssl@3`) are detected correctly via stable `brew --prefix` opt symlinks, probed three ways (pkg-config, header search, `brew list`). `brew` is never run as root — under a `sudo` system install it de-escalates to your real user automatically. MacPorts is bootstrapped from the correct version-matched `.pkg` for your macOS version. Xcode Command Line Tools are offered when absent.
+- **Automatic PATH wiring.** On a user-scope install (`~/.local/bin`), OIS adds the binary directory to your shell's rc files (`~/.zshrc`, `~/.bash_profile`, `~/.profile`) with clearly marked OIS blocks, and removes them cleanly on uninstall. You don't need to open a new terminal to find `ytcui` right after installing.
+- **Next-best-version matching.** If an exact package version isn't available (e.g. `openssl@3.2` vs `openssl@3.3`), OIS can find and install the nearest available alternative. Enable with `next_best_version = yes` in `ois.conf`.
+- **Automatic package search.** When a dependency isn't found by name, OIS queries the package manager's search index to find the right package name for your distro (e.g. `libncurses-dev` vs `ncurses-devel` vs `ncurses5-config`).
+- **Expanded platform support:** NetBSD (pkgin), OpenBSD (pkg_add), Illumos/OmniOS (ips), and DragonFlyBSD added alongside the existing Linux, macOS, and FreeBSD support.
+- **Lockfile.** `ois.lock` records the dependency versions resolved at install time. Commit it and `ois lock --check` tells you exactly which dependency moved between machines.
+- **`ois plan` dry-run.** See exactly what OIS will do before it does it.
+
 ---
 
 ## Keys
 
+All playback and navigation keys are configurable via `Ctrl-S` → Accelerators, or the `"keys"` block in `config.json`.
+
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Navigate up / down |
+| `j` / `k` | Navigate down / up |
 | `h` / `l` | Navigate left / right (tabs, menus) |
 | `Tab` | Cycle panel focus |
 | `Enter` | Select / open action menu |
-| `Esc` | Back / re-search from Results |
-| `/` | Jump to search |
-| `p` | Pause / resume (global) |
+| `Esc` | Back / cancel |
+| `/` | Jump to search (global — works from anywhere) |
+| `Space` / `p` | Pause / resume playback (global) |
+| `+` / `-` | Volume up / down ±5% (global) |
+| `<` / `>` | Seek back / forward 10s (global) |
 | `s` | Sort & filter |
 | `n` | New playlist (in Playlists tab) |
 | `g` / `G` | Jump to top / bottom of results |
 | `q` | Quit |
+| `?` | Shortcuts reference panel |
+| `Ctrl-S` | In-app settings (live theme + key rebinding) |
 
-Mouse works everywhere — click tabs, result rows, action items, info panel, scroll wheel navigates.
+Mouse works everywhere — click tabs, result rows, action items, scroll wheel navigates.
 
 ---
 
@@ -109,29 +166,19 @@ Mouse works everywhere — click tabs, result rows, action items, info panel, sc
 
 ## Streamlined mode
 
-On very narrow terminals ytcui automatically switches to a dense, minimalist
-music-player layout that follows your theme colours:
+On very narrow terminals ytcui automatically switches to a dense, minimalist music-player layout that follows your theme colours:
 
-- An iPod-style section menu mirroring the normal tabs — **Search · Library ·
-  Playlists · Feed · History** (plus Now Playing) — navigate with `j`/`k` and
-  `Enter`.
-- Each section opens a compact list (title + channel · duration); selecting an
-  item gives a **Play video / Play audio** chooser.
-- A now-playing card with album-art thumbnail, waveform, time, title/artist and
-  transport controls. `space` pauses, `b`/`Esc` goes back, `q` quits.
+- An iPod-style section menu mirroring the normal tabs — **Search · Library · Playlists · Feed · History** (plus Now Playing) — navigate with `j`/`k` and `Enter`.
+- Each section opens a compact list (title + channel · duration); selecting an item gives a **Play video / Play audio** chooser.
+- A now-playing card with album-art thumbnail, waveform, real elapsed/total time, title/artist and transport controls. `Space` pauses, `+`/`-` adjust volume, `<`/`>` seek, `Ctrl-S` opens settings, `b`/`Esc` goes back, `q` quits.
 
-It's conservative: the default is always the full UI, and it only switches when
-the terminal reports a reliably narrow width. Force it either way:
+Force it either way:
 
 ```bash
 ytcui --mode streamlined   # always the music-player UI
 ytcui --mode normal        # always the full UI
 ytcui --mode auto          # default: switch when narrow
 ```
-
-You can also set `"mode"` to `auto`/`normal`/`streamlined` in the config file —
-or just pick it during `sh install.sh`, which asks for the backend
-(ytcui-dl / yt-dlp), streamlined mode, and thumbnails up front.
 
 ---
 
@@ -140,7 +187,7 @@ or just pick it during `sh install.sh`, which asks for the backend
 ```bash
 ytcui                      # launch
 ytcui -t pink              # sakura theme
-ytcui -t dracula           # dracula theme
+ytcui -t dracula           # dracula theme (persists to config)
 ytcui --gfx sixel          # real-image thumbnails (sixel/kitty/iterm/blocks/auto/off)
 ytcui --colors             # list all colour elements + config example
 ytcui --debug              # enable debug logging
@@ -155,7 +202,7 @@ ytcui --version            # version
 
 ## Themes
 
-Ten new soft pastel themes joined the classics in v3.0.0:
+18 themes, switchable with `ytcui -t <name>` or live in-app with `Ctrl-S`. The choice persists across launches.
 
 | Theme | Vibe |
 |-------|------|
@@ -177,8 +224,6 @@ Ten new soft pastel themes joined the classics in v3.0.0:
 | `red` | Dusty rose, linen, the blush of a gentle sunset |
 | `slate` | Cool steel mist and powder blue-grey at dusk |
 | `grayscale` | No colour. Just shape, light, and shadow |
-
-Switch anytime: `ytcui -t mint`
 
 ---
 
@@ -213,13 +258,15 @@ ytcui ships with two backends, chosen at install time (switchable by rebuilding)
 | **Dependencies** | None (built-in) | Python + yt-dlp |
 | **How it works** | InnerTube API (YouTube mobile) | JS player extraction |
 | **Stability** | Experimental | Battle-tested |
-| **Recommended** |  Yes | If ytcui-dl breaks |
+| **Recommended** | Yes | If ytcui-dl breaks |
 
 The backend is baked in at compile time. Rebuild to switch:
 ```bash
 make BACKEND=ytcuidl   # default
 make BACKEND=ytdlp
 ```
+
+> **Note:** ytcui-dl is actively developed. Video quality support up to 2K/4K is in progress, and audio bitrate will increase from 128 kbps to 160 kbps in a future release.
 
 ---
 
@@ -232,6 +279,22 @@ make BACKEND=ytdlp
   "theme": "pink",
   "max_results": 15,
   "show_thumbnails": true,
+  "no_hardware_accel": false,
+  "keys": {
+    "search":      "/",
+    "pause":       " ",
+    "volume_up":   "+",
+    "volume_down": "-",
+    "seek_fwd":    ">",
+    "seek_back":   "<",
+    "quit":        "q",
+    "scroll_up":   "k",
+    "scroll_down": "j",
+    "top":         "g",
+    "bottom":      "G",
+    "sort":        "s",
+    "new_playlist": "n"
+  },
   "colors": {}
 }
 ```
@@ -252,14 +315,6 @@ make SIXEL=libsixel    # optional: in-process sixel thumbnails via libsixel
 make clean             # clean
 ```
 
-**Thumbnails:** block art (the default) works on any 256-colour terminal.
-Real-image thumbnails via a graphics protocol (sixel/kitty/iterm) are an
-**experimental opt-in** since piped encoders can mis-size on some terminals:
-enable with `ytcui --gfx sixel` (or `kitty`/`iterm`), and build
-`make SIXEL=libsixel` for pixel-exact sixel. `--gfx auto` stays on block art but
-tells you which protocol your terminal could try. Run `ytcui --diag` to see what
-was detected. If a raster mode looks wrong, use `--gfx blocks`.
-
 **Dependencies by platform:**
 
 | Platform | Build deps | Runtime |
@@ -272,16 +327,6 @@ was detected. If a raster mode looks wrong, use `--gfx blocks`.
 
 ---
 
-## Updating
-
-```bash
-ytcui --upgrade
-```
-
-The updater clones the latest release, detects your current backend, rebuilds, and reinstalls — all in one command. The update script lives at `/usr/local/share/ytcui/update.sh`, so you don't need the original repo folder.
-
----
-
 ## Troubleshooting
 
 **UTF-8 looks garbled** — set your terminal locale:
@@ -291,6 +336,8 @@ export LANG=en_US.UTF-8   # add to ~/.bashrc or ~/.zshrc
 
 **Age-restricted videos fail** — use browser auth from the action menu (Login via browser cookies).
 
+**macOS: `command not found` after install** — OIS writes `~/.local/bin` to your shell rc files automatically, but you may need to open a new terminal (or run `source ~/.zshrc`) for it to take effect. If it still isn't found, check `echo $PATH` includes `~/.local/bin`, or add it manually.
+
 **macOS: `command not found: brew`** — after Homebrew installs, add to `~/.zshrc`:
 ```bash
 eval "$(/opt/homebrew/bin/brew shellenv)"   # Apple Silicon
@@ -299,7 +346,9 @@ eval "$(/usr/local/bin/brew shellenv)"      # Intel
 
 **Thumbnails are missing or broken** — check `chafa` is installed: `which chafa`. Run `ytcui --diag` for a full system check.
 
-**Debug mode** — run `ytcui --debug --logdump` to capture detailed logs to `~/.cache/ytcui/`.
+**Debug mode** — run `ytcui --debug --logdump` to capture detailed logs.
+
+**Escape garbage in the status bar** — this was a 4.0.0 bug (mouse position events leaking as text at the faster input poll rate) fixed in 4.0.0's final release. If you see it, make sure you have the latest build.
 
 ---
 
@@ -315,4 +364,4 @@ MIT
 
 ---
 
-If you found like this, please 🌟 it, makes me feel fuzzy and nice inside. ૮ ˶ᵔ ᵕ ᵔ˶ ა
+If you like this, please 🌟 it — makes me feel fuzzy and nice inside. ૮ ˶ᵔ ᵕ ᵔ˶ ა
