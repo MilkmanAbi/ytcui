@@ -2,7 +2,7 @@
 
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
-Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in) or **yt-dlp**.
+Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in, experimental youtube client) or the mature **yt-dlp**.
 
 <img src="Pictures/ytcui-new.png" alt="ytcui screenshot">
 
@@ -25,7 +25,7 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 git clone https://github.com/MilkmanAbi/ytcui.git && cd ytcui && sh install.sh
 ```
 
-> 3.5.2 is unforunately a breaking update since the Install System has been replaced and updated to OIS, manually uninstalled older versions may be required via uninstalling the binary. Fortunately, ytcui updates >3.5.2 will be non breaking with OIS handling clean rebuilds hereby.
+> ⚠️ **4.0.0 is a breaking update since the Install System has been replaced and updated from OISv1 to OISv4, manually uninstalling older versions IS required via uninstalling the binary. Fortunately, ytcui updates >4.0.0 will be non breaking with OIS handling clean rebuilds hereby.**
 
 Installation is handled by [OneInstallSystem (OIS)](https://github.com/MilkmanAbi/OneInstallSystem):
 it detects your OS and package manager, installs the right dependencies
