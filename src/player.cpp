@@ -1,6 +1,7 @@
 #include "player.h"
 #include "log.h"
 #include <cstring>
+#include <algorithm>
 #include <cerrno>
 #include <vector>
 #include <string>
@@ -55,6 +56,9 @@ void Player::play(const std::string& url, const std::string& title, PlayMode mod
 }
 
 void Player::stop() {
+    if (ipc_.connected()) ipc_.quit();   // best-effort clean exit
+    ipc_.disconnect();
+    ipc_.cleanup();
     kill_mpv();
     playing_ = false;
     paused_  = false;
@@ -65,16 +69,61 @@ void Player::close_death_pipe() {}
 
 bool Player::toggle_pause() {
     if (!playing_ || mpv_pid_ <= 0) return false;
-    if (paused_) {
-        kill(-mpv_pid_, SIGCONT);
-        paused_ = false;
-        Log::write("Resumed pgid -%d", mpv_pid_);
+    if (ipc_.connected() && ipc_.toggle_pause()) {
+        paused_ = !paused_;   // optimistic; pump() will confirm from mpv
+        Log::write("IPC %s pid=%d", paused_ ? "paused" : "resumed", mpv_pid_);
     } else {
-        kill(-mpv_pid_, SIGSTOP);
-        paused_ = true;
-        Log::write("Paused pgid -%d", mpv_pid_);
+        // Fallback: SIGSTOP/SIGCONT (laggy but works without IPC)
+        if (paused_) {
+            kill(-mpv_pid_, SIGCONT);
+            paused_ = false;
+        } else {
+            kill(-mpv_pid_, SIGSTOP);
+            paused_ = true;
+        }
+        Log::write("Signal %s pgid -%d (IPC unavailable)", paused_ ? "paused" : "resumed", mpv_pid_);
     }
     return paused_;
+}
+
+bool Player::volume_up(int step) {
+    current_volume_ = std::min(150, current_volume_ + step);
+    if (ipc_.connected()) return ipc_.adjust_volume(step);
+    return false;
+}
+
+bool Player::volume_down(int step) {
+    current_volume_ = std::max(0, current_volume_ - step);
+    if (ipc_.connected()) return ipc_.adjust_volume(-step);
+    return false;
+}
+
+bool Player::set_volume(int vol) {
+    current_volume_ = std::clamp(vol, 0, 150);
+    if (ipc_.connected()) return ipc_.set_volume(current_volume_);
+    return false;
+}
+
+int Player::get_volume() const {
+    // Prefer mpv's reported volume when we have it; else our local shadow.
+    if (ipc_.connected() && ipc_.volume() >= 0) return ipc_.volume();
+    return current_volume_;
+}
+
+void Player::tick() {
+    if (!playing_) return;
+    if (!ipc_.connected()) ipc_.try_connect();  // one cheap attempt per frame
+    ipc_.pump();                                 // drain events, refresh cache
+}
+
+bool Player::seek_forward(double secs) {
+    if (ipc_.connected()) return ipc_.seek(secs);
+    return false;
+}
+
+bool Player::seek_backward(double secs) {
+    if (ipc_.connected()) return ipc_.seek(-secs);
+    return false;
 }
 
 bool Player::is_playing() const {
@@ -131,9 +180,25 @@ static std::string vol_flag(int v) {
 }
 
 // Exec mpv with an args vector, fork-safe. Returns false on exec failure.
-static bool spawn_mpv(const std::vector<std::string>& args, pid_t& out_pid, bool log_to_file) {
+static bool spawn_mpv(const std::vector<std::string>& args, pid_t& out_pid, bool log_to_file, const std::string& ipc_sock = "") {
+    // Inject the IPC socket flag just after argv[0] ("mpv"), BEFORE any
+    // positional stream URL. Options placed after the URL can be misparsed
+    // by some mpv builds, which is enough to make playback fail to start.
+    std::vector<std::string> full_args;
+    full_args.reserve(args.size() + 1);
+    bool injected = false;
+    for (size_t i = 0; i < args.size(); ++i) {
+        full_args.push_back(args[i]);
+        if (i == 0 && !ipc_sock.empty()) {          // right after "mpv"
+            full_args.push_back("--input-ipc-server=" + ipc_sock);
+            injected = true;
+        }
+    }
+    if (!injected && !ipc_sock.empty())
+        full_args.insert(full_args.begin() + (full_args.empty() ? 0 : 1),
+                         "--input-ipc-server=" + ipc_sock);
     std::vector<const char*> argv;
-    for (auto& a : args) argv.push_back(a.c_str());
+    for (auto& a : full_args) argv.push_back(a.c_str());
     argv.push_back(nullptr);
 
     int exec_pipe[2];
@@ -355,10 +420,13 @@ void Player::play_piped(const std::string& url, const std::string& title, PlayMo
 
     Log::write("[ytcui-dl] play_piped: mpv --no-video (muxed stream, direct URL)");
 
-    if (spawn_mpv(args, mpv_pid_, Log::is_logdump())) {
+    std::string sock = ipc_.init_socket();
+    if (spawn_mpv(args, mpv_pid_, Log::is_logdump(), sock)) {
         playing_       = true;
         current_title_ = title;
-        Log::write("[ytcui-dl] play_piped pid=%d", mpv_pid_);
+        current_volume_ = opts_.volume;
+        ipc_.try_connect();   // may not be ready yet; tick() retries each frame
+        Log::write("[ytcui-dl] play_piped pid=%d ipc=%s", mpv_pid_, ipc_.connected() ? "ok" : "pending");
     }
 
 #else  // yt-dlp backend: pipe yt-dlp | mpv
@@ -392,6 +460,10 @@ void Player::play_piped(const std::string& url, const std::string& title, PlayMo
         mpv_pid_       = pid;
         playing_       = true;
         current_title_ = title;
+        current_volume_ = opts_.volume;
+        // yt-dlp pipe path: mpv is a child of sh, IPC socket path
+        // would need to be injected into the shell command. Skip IPC
+        // for the legacy path — SIGSTOP fallback still works.
         Log::write("Piped play pid=%d", pid);
     } else {
         Log::write("fork failed: %s", strerror(errno));
@@ -436,8 +508,11 @@ void Player::play_direct(const std::string& url, const std::string& title) {
             args.push_back("--cache=no");
         }
         if (opts_.no_hardware_accel) {
+            // Disable hardware DECODING only. Do NOT set --vo=libmpv: that is
+            // mpv's embedding render API, not a standalone video output, and
+            // with --force-window it breaks or blanks the video window. The
+            // default vo (gpu) is correct; --hwdec=no alone is the right knob.
             args.push_back("--hwdec=no");
-            args.push_back("--vo=libmpv");
         }
 #ifdef USE_YTCUIDL
         // Android UA required for CDN access on both muxed and adaptive streams
@@ -468,16 +543,22 @@ void Player::play_direct(const std::string& url, const std::string& title) {
             args.push_back("--cache=no");
         }
         if (opts_.no_hardware_accel) {
+            // Disable hardware DECODING only. Do NOT set --vo=libmpv: that is
+            // mpv's embedding render API, not a standalone video output, and
+            // with --force-window it breaks or blanks the video window. The
+            // default vo (gpu) is correct; --hwdec=no alone is the right knob.
             args.push_back("--hwdec=no");
-            args.push_back("--vo=libmpv");
         }
         args.push_back(url);
     }
 
-    if (spawn_mpv(args, mpv_pid_, Log::is_logdump())) {
+    std::string sock = ipc_.init_socket();
+    if (spawn_mpv(args, mpv_pid_, Log::is_logdump(), sock)) {
         playing_       = true;
         current_title_ = title;
-        Log::write("Direct play pid=%d", mpv_pid_);
+        current_volume_ = opts_.volume;
+        ipc_.try_connect();
+        Log::write("Direct play pid=%d ipc=%s", mpv_pid_, ipc_.connected() ? "ok" : "pending");
     }
 }
 
@@ -518,5 +599,9 @@ void Player::kill_mpv() {
     }
     mpv_pid_ = -1;
 }
+
+double Player::get_position() const { return ipc_.position(); }
+double Player::get_duration() const { return ipc_.duration(); }
+bool   Player::have_progress() const { return ipc_.have_progress(); }
 
 } // namespace ytui

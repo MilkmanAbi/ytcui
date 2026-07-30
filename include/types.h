@@ -9,7 +9,7 @@ namespace ytui {
 #ifdef YTUI_VERSION
 constexpr const char* VERSION = YTUI_VERSION;
 #else
-constexpr const char* VERSION = "3.2.0";
+constexpr const char* VERSION = "4.0.0";
 #endif
 
 struct Video {
@@ -38,6 +38,8 @@ enum class Panel {
     PlaylistActions,  // Action menu on a playlist video
     PlaylistPick,     // "Add to playlist" popup
     NewPlaylist,      // Name-entry dialog for new playlist
+    Shortcuts,        // Keybinding reference popup (? to open)
+    Settings,         // In-app settings UI (Ctrl-S): live theme + accelerators
 };
 
 enum class Tab { Library, Playlists, Feed, History, Results };
@@ -89,12 +91,31 @@ struct AppState {
     std::string now_playing;
     PlayMode play_mode = PlayMode::Video;
 
+    // Playback progress (updated from mpv IPC every render cycle)
+    double playback_pos  = 0.0;   // seconds elapsed
+    double playback_dur  = 0.0;   // total duration in seconds
+    int    playback_vol  = 80;    // current volume %
+
     bool thumbs_available = false;
     // Resolved thumbnail graphics protocol (cast of Thumbnails::Gfx). Set once
     // by App at startup. 0=None,1=Blocks,2=Sixel,3=Kitty,4=Iterm. Defaults to
     // Blocks so behaviour is unchanged unless a raster mode is selected.
     int gfx_mode = 1;
 
+    bool show_shortcuts = false;   // ? key opens the shortcuts reference panel
+
+    // In-app settings UI (Ctrl-S). Live theme switching + key rebinding,
+    // no restart required. settings_tab: 0=Theme, 1=Accelerators.
+    bool show_settings   = false;
+    int  settings_tab    = 0;
+    int  settings_sel    = 0;   // cursor within the active tab
+    bool settings_capturing = false;  // true while waiting for a key to bind
+    std::string settings_toast;       // transient confirmation line
+    // Snapshot the App fills before rendering the settings UI, so the TUI
+    // stays decoupled from Config. Theme names + current accelerator labels.
+    std::vector<std::string> settings_theme_names;   // 18 theme names
+    std::vector<std::string> settings_accel_labels;  // "Pause / resume" ...
+    std::vector<std::string> settings_accel_keys;    // "Space", "^Q" ...
     Theme theme    = Theme::Default;
     bool grayscale = false;  // legacy compat
     ThemeColors resolved_colors;  // final colors after custom overrides — set by App

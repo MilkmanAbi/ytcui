@@ -86,6 +86,10 @@ static bool stream_handle(int ch, AppState& state) {
 
         case StreamScreen::Playing:
             if (ch == ' ') state.status_message = "__PAUSE_TOGGLE__";
+            else if (ch == '+') state.status_message = "__VOLUME_UP__";
+            else if (ch == '-') state.status_message = "__VOLUME_DOWN__";
+            else if (ch == '>') state.status_message = "__SEEK_FWD__";
+            else if (ch == '<') state.status_message = "__SEEK_BACK__";
             else if (ch == 'b' || ch == 27)
                 state.stream_screen = state.results.empty() ? (int)StreamScreen::Menu : (int)StreamScreen::Browse;
             else if (ch == 'q') state.running = false;
@@ -288,6 +292,13 @@ bool InputHandler::handle(int ch, AppState& state) {
     }
 
     // ── Popups (intercept before global keys) ────────────────────────────────
+    if (state.focus == Panel::Shortcuts) {
+        state.show_shortcuts = false;
+        // Return focus to wherever makes sense
+        if (!state.results.empty()) state.focus = Panel::Results;
+        else state.focus = Panel::Search;
+        return false;
+    }
     if (state.focus == Panel::BrowserPick)    { handle_browser_pick(ch, state);    return false; }
     if (state.focus == Panel::SortMenu)       { handle_sort_menu(ch, state);       return false; }
     if (state.focus == Panel::SavePrompt)     { handle_save_prompt(ch, state);     return false; }
@@ -297,13 +308,49 @@ bool InputHandler::handle(int ch, AppState& state) {
     if (state.focus == Panel::PlaylistActions){ handle_playlist_actions(ch, state); return false; }
     if (state.focus == Panel::PlaylistList)   { handle_playlist_list(ch, state);   return false; }
 
-    // ── Global keys ──────────────────────────────────────────────────────────
-    if (ch == 'p' && state.focus != Panel::Search && state.is_playing) {
+    // ── Global keys (configurable via Ctrl-S settings) ───────────────────────
+    // These honour the live keybindings so rebinds actually take effect. They
+    // run before the per-panel switch below, so a configured key wins over the
+    // panel's built-in navigation. Search is exempt (typing must reach the box).
+    const Config::KeyBindings& k = kb();
+    bool in_search = (state.focus == Panel::Search);
+
+    if (!in_search && state.is_playing && (ch == k.pause || ch == 'p')) {
         state.status_message = "__PAUSE_TOGGLE__";
         return false;
     }
-    if (ch == 'q' && state.focus != Panel::Search) {
+    if (!in_search && state.is_playing && ch == k.volume_up) {
+        state.status_message = "__VOLUME_UP__";
+        return false;
+    }
+    if (!in_search && state.is_playing && ch == k.volume_down) {
+        state.status_message = "__VOLUME_DOWN__";
+        return false;
+    }
+    if (!in_search && state.is_playing && ch == k.seek_fwd) {
+        state.status_message = "__SEEK_FWD__";
+        return false;
+    }
+    if (!in_search && state.is_playing && ch == k.seek_back) {
+        state.status_message = "__SEEK_BACK__";
+        return false;
+    }
+    if (!in_search && ch == '?') {
+        state.show_shortcuts = !state.show_shortcuts;
+        if (state.show_shortcuts)
+            state.focus = Panel::Shortcuts;
+        return false;
+    }
+    if (!in_search && ch == k.quit) {
         state.running = false;
+        return false;
+    }
+    // Search: jump to the search box from anywhere (true global accelerator).
+    // Works even from Results, Actions, or any other panel. Honours a rebound
+    // search key. The per-panel handler in handle_results_input is now
+    // unreachable for this key but left for clarity.
+    if (!in_search && ch == k.search) {
+        state.focus = Panel::Search;
         return false;
     }
 
@@ -484,25 +531,28 @@ void InputHandler::handle_tabs_input(int ch, AppState& state) {
 void InputHandler::handle_results_input(int ch, AppState& state) {
     int total = (int)state.results.size();
     if (total == 0) return;
+    const Config::KeyBindings& k = kb();
+
+    // Configurable keys first (an if-ladder, since switch needs constants).
+    // Arrow keys and Enter/l stay always-available regardless of rebinds.
+    if (ch == k.scroll_down || ch == KEY_DOWN) {
+        if (state.selected_result < total - 1) { state.selected_result++; clamp_scroll(state); }
+        return;
+    }
+    if (ch == k.scroll_up || ch == KEY_UP) {
+        if (state.selected_result > 0) { state.selected_result--; clamp_scroll(state); }
+        else state.focus = Panel::Tabs;
+        return;
+    }
+    if (ch == k.top)    { state.selected_result = 0; state.results_scroll = 0; return; }
+    if (ch == k.bottom) { state.selected_result = total - 1; clamp_scroll(state); return; }
+    if (ch == k.sort)   { state.sort_col = 0; state.sort_row = 0; state.focus = Panel::SortMenu; return; }
+
     switch (ch) {
-        case 'j': case KEY_DOWN:
-            if (state.selected_result < total - 1) { state.selected_result++; clamp_scroll(state); }
-            break;
-        case 'k': case KEY_UP:
-            if (state.selected_result > 0) { state.selected_result--; clamp_scroll(state); }
-            else state.focus = Panel::Tabs;
-            break;
-        case 'g': state.selected_result = 0; state.results_scroll = 0; break;
-        case 'G': state.selected_result = total - 1; clamp_scroll(state); break;
         case '\n': case KEY_ENTER: case 'l': case KEY_RIGHT:
             state.actions_visible = true;
             state.focus = Panel::Actions;
             state.selected_action = 0;
-            break;
-        case '/': state.focus = Panel::Search; break;
-        case 's':
-            state.sort_col = 0; state.sort_row = 0;
-            state.focus = Panel::SortMenu;
             break;
     }
 }

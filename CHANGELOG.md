@@ -2,6 +2,58 @@
 
 All notable changes to ytcui will be documented in this file.
 
+## [4.0.0] - 2026-07-27
+
+### Added
+- **Instant pause/resume via mpv IPC.** Replaced the old SIGSTOP/SIGCONT
+  approach (which drained mpv's audio buffer and rebuffered on resume, a
+  2-3 second stutter) with mpv's JSON IPC socket. Pause is now codec-level
+  and effectively instantaneous, with proper OSD feedback. `Space` or `p`.
+- **Volume and seek controls** (mpv IPC): `+`/`-` adjust volume ±5%,
+  `<`/`>` seek ±10s. Requested in issue #4.
+- **Live progress bar** in the status area: elapsed/total time, a filled
+  bar, and current volume, polled from mpv each frame. Requested in #5.
+- **In-app settings UI (Ctrl-S).** A popup with two tabs: *Theme* (switches
+  the colour theme live, no restart) and *Accelerators* (rebind keys on the
+  fly; changes save to config.json). Ctrl-Shift-S works too.
+- **Shortcuts reference panel (`?`).** Lists every keybinding.
+- **Configurable keybindings** via a `"keys"` block in config.json.
+- **Theme is remembered.** `ytcui --theme <name>` now persists to config;
+  the next launch keeps it without the flag.
+- **Interactive installer.** `./install.sh` now asks a few questions —
+  package manager (Homebrew/MacPorts on macOS, with optional auto-install),
+  video backend (ytcui-dl or yt-dlp), colour theme (all 18, described), and
+  mpv hardware acceleration — then hands off to OIS. Non-interactive/`--yes`
+  takes defaults silently.
+- **Bundles OIS 4.0.0**, which makes the macOS/BSD install path robust:
+  Homebrew keg-only dependencies (`ncurses`, `curl`, `openssl@3`) are now
+  detected correctly via the stable `brew --prefix` opt symlinks and probed
+  three ways (pkg-config, header search, `brew list`), fixing the install
+  loop that reported *"still missing after installation"* even when the
+  packages were present. brew is never run as root (de-escalated under
+  sudo); MacPorts is bootstrapped from the correct version-matched `.pkg`;
+  the Xcode Command Line Tools are offered when absent; and `~/.local/bin`
+  is added to your shell PATH on install and removed on uninstall — so a
+  freshly built `ytcui` is found without opening a new terminal.
+- Hardware-acceleration preference (`no_hardware_accel`) is now read from
+  config.json, so the installer's choice takes effect on first launch.
+
+### Changed
+- **Rewrote `--help`.** Grouped, aligned, colourised (plain when piped),
+  and far less of a wall of text.
+- Input polling tightened from 100 ms to 33 ms (~30 fps) for snappier keys.
+- Terminal flow control (IXON/IXOFF) is disabled at startup so Ctrl-S
+  reaches the app instead of freezing the terminal.
+- Replaced the vendored OIS v1 with OIS v3 (dependency resolution, atomic
+  installs, crash recovery, `ois plan` dry-run, lifecycle hooks).
+
+### Fixed
+- **Reinstalling over an already-built tree no longer fails with E-BUILD.**
+  OIS v3's build-locate wrongly rejected an up-to-date binary (when `make`
+  had nothing to rebuild) as "no artifact produced." It now prefers a fresh
+  artifact but accepts an existing one after a clean build exit. This is the
+  install -> uninstall -> reinstall failure some users hit.
+
 ## [3.5.7] - 2026-06-18
 
 ### Fixed

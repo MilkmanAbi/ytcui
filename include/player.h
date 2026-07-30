@@ -3,6 +3,7 @@
 #include "types.h"
 #include <string>
 #include <sys/types.h>
+#include "mpv_ipc.h"
 
 namespace ytui {
 
@@ -30,7 +31,24 @@ public:
     bool is_paused() const { return paused_; }
     bool is_playing() const;
 
+    // Volume control via IPC (instant, no restart)
+    bool volume_up(int step = 5);
+    bool volume_down(int step = 5);
+    bool set_volume(int vol);
+    int  get_volume() const;
+
+    // Seeking via IPC
+    bool seek_forward(double secs = 10.0);
+    bool seek_backward(double secs = 10.0);
+
     std::string now_playing() const;
+
+    // Progress info (cached from mpv IPC; never blocks). Call tick() once per
+    // UI frame to refresh the cache and keep the IPC connection alive.
+    void   tick();                  // pump IPC + retry connect; per-frame
+    double get_position() const;    // seconds elapsed, -1 if unknown
+    double get_duration() const;    // total seconds, -1 if unknown
+    bool   have_progress() const;
 
     static bool is_available();
 
@@ -42,6 +60,8 @@ private:
     int  death_pipe_[2] = {-1, -1};
 
     PlayerOptions opts_;
+    MpvIPC ipc_;
+    int current_volume_ = 80;
 
     void play_piped(const std::string& url, const std::string& title, PlayMode mode);
     void play_direct(const std::string& url, const std::string& title);

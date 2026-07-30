@@ -2,6 +2,7 @@
 
 #include <string>
 #include <map>
+#include <functional>
 #include "theme.h"
 
 namespace ytui {
@@ -11,6 +12,7 @@ struct Config {
     std::string mpv_path    = "mpv";
     int  max_results        = 15;
     bool prefer_audio       = false;
+    bool no_hardware_accel  = false;   // seed from installer; --no-ha overrides
     bool grayscale          = false;   // legacy
     bool show_thumbnails    = true;
 
@@ -52,6 +54,35 @@ struct Config {
     //       published, bookmark, desc
     // Values: 256-colour index (0-255) or -1 for terminal default.
     std::map<std::string, int> custom_colors;
+
+    // Configurable keybindings: action name -> key character.
+    // Defaults are set in load(). Users override in config.json under "keys".
+    // Action names: pause, volume_up, volume_down, seek_fwd, seek_back,
+    //               quit, search, scroll_up, scroll_down, select, back
+    struct KeyBindings {
+        int pause      = ' ';    // space
+        int volume_up  = '+';
+        int volume_down = '-';
+        int seek_fwd   = '>';
+        int seek_back  = '<';
+        int quit       = 'q';
+        int search     = '/';
+        int scroll_up  = 'k';
+        int scroll_down = 'j';
+        int select     = '\n';
+        int back       = 27;     // escape
+        int top        = 'g';
+        int bottom     = 'G';
+        int sort       = 's';
+        int new_playlist = 'n';
+    } keys;
+
+    // Human-readable name for a key code (inverse of the installer's parser).
+    // e.g. ' ' -> "Space", 27 -> "Esc", 'a' -> "a". Used by the settings UI.
+    static std::string key_display(int k);
+    // Config-file form of a key code ("space", "x") — the inverse of the
+    // installer/loader's parse_key_name. Used by save() to persist rebinds.
+    static std::string key_config_name(int k);
 
     Theme get_theme() const {
         if (grayscale) return Theme::Grayscale;

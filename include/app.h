@@ -50,6 +50,10 @@ private:
     void refresh_playlist_names();
     void apply_sort_filter();
     void do_save(int choice);
+
+    // In-app settings UI (Ctrl-S): live theme switching + accelerator rebinding.
+    void handle_settings_key(int ch);
+    void apply_theme_live(const std::string& theme_name);  // re-theme, no restart
 };
 
 } // namespace ytui

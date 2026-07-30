@@ -1,115 +1,179 @@
 #!/bin/sh
-# ytcui installer — interactive front-end to OneInstallSystem (OIS).
-# Asks a couple of setup questions, records the choices, then hands off to OIS
-# which resolves dependencies, builds from source, and installs.
-cd "$(dirname "$0")" || exit 1
-chmod +x OIS/OIS.sh OIS/core/*.sh 2>/dev/null || true
+# ytcui installer.
+#
+#     git clone https://github.com/MilkmanAbi/ytcui && cd ytcui && ./install.sh
+#
+# A short, friendly Q&A up front, then it hands the actual build/install to
+# OIS (ois/ois.sh). Non-interactive callers (CI, --yes, no TTY) skip every
+# prompt and take the defaults, so this stays scriptable.
+#
+# Flags are forwarded to OIS untouched:
+#   --user | --system | --prefix DIR | --yes | --verbose | --json
+set -eu
 
-# Non-interactive when there's no TTY (CI) or when --yes/--defaults is passed.
-NONINTERACTIVE=0
-for a in "$@"; do case "$a" in --yes|-y|--defaults|--no-config) NONINTERACTIVE=1 ;; esac; done
-[ -t 0 ] || NONINTERACTIVE=1
+SELF="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$SELF/ois/ois.sh" ] || {
+    printf 'error: %s/ois/ois.sh is missing.\n' "$SELF" >&2
+    printf 'The ois/ directory must sit beside this script.\n' >&2
+    exit 1
+}
 
-BACKEND_CHOICE=ytcuidl
-MODE_CHOICE=auto
-GFX_CHOICE=blocks
-THEME_CHOICE=default
-
-if [ "$NONINTERACTIVE" = "0" ]; then
-    printf '\n  \033[1mytcui setup\033[0m  (press Enter for the default)\n'
-
-    printf '\n  Backend:\n'
-    printf '    1) ytcui-dl  — native InnerTube client, no yt-dlp needed  [default]\n'
-    printf '    2) yt-dlp    — shell out to yt-dlp (legacy)\n'
-    printf '  Choice [1/2]: '
-    read -r _r; case "$_r" in 2) BACKEND_CHOICE=ytdlp ;; esac
-
-    printf '\n  Streamlined mode — a minimalist music-player UI for narrow terminals:\n'
-    printf '    1) Auto      — switch automatically when the terminal is narrow  [default]\n'
-    printf '    2) Off       — always use the full UI\n'
-    printf '    3) Always    — always use the music-player UI\n'
-    printf '  Choice [1/2/3]: '
-    read -r _r; case "$_r" in 2) MODE_CHOICE=normal ;; 3) MODE_CHOICE=streamlined ;; esac
-
-    printf '\n  Enable thumbnails (needs chafa)? [Y/n]: '
-    read -r _r; case "$_r" in n|N|no) GFX_CHOICE=off ;; esac
-
-    printf '\n  Theme — pick a colour scheme:\n'
-    cat <<'THEMES'
-     1) default    The classic. Clean terminal colours, no fuss.
-     2) dracula    Deep purples and crimson accents. Creature of the night.
-     3) nord       Arctic blues and soft greys. Nordic winter calm.
-     4) tokyo      Neon city rain at midnight. Tokyo Night vibes.
-     5) gruvbox    Warm wood and amber. Retro terminal cosiness.
-     6) monokai    Vivid syntax colours. The classic dev palette.
-     7) solarized  Precision-tuned tones. Easy on the eyes all day.
-     8) pink       Soft sakura blossoms and blush petals at dawn.
-     9) purple     Wisteria and lavender fields in the late afternoon.
-    10) blue       Powder sky, periwinkle haze, and summer sea glass.
-    11) green      Morning sage, honeydew, and botanical softness.
-    12) mint       Cool spearmint foam and pale jade on a spring day.
-    13) ocean      Pale turquoise coves and seafoam on still water.
-    14) coral      Warm peach, apricot, and sun-kissed sandy blush.
-    15) amber      Champagne fields, soft gold, and cornsilk warmth.
-    16) red        Dusty rose, linen, and the blush of a gentle sunset.
-    17) slate      Cool steel mist and powder blue-grey at dusk.
-    18) grayscale  No colour. Just shape, light, and shadow.
-    Not sure? Pick anything — you can change it anytime with: ytcui -t <name>
-THEMES
-    printf '  Choice [1-18]: '
-    read -r _r
-    case "$_r" in
-        2) THEME_CHOICE=dracula ;;   3) THEME_CHOICE=nord ;;      4) THEME_CHOICE=tokyo ;;
-        5) THEME_CHOICE=gruvbox ;;   6) THEME_CHOICE=monokai ;;   7) THEME_CHOICE=solarized ;;
-        8) THEME_CHOICE=pink ;;      9) THEME_CHOICE=purple ;;   10) THEME_CHOICE=blue ;;
-        11) THEME_CHOICE=green ;;   12) THEME_CHOICE=mint ;;     13) THEME_CHOICE=ocean ;;
-        14) THEME_CHOICE=coral ;;   15) THEME_CHOICE=amber ;;    16) THEME_CHOICE=red ;;
-        17) THEME_CHOICE=slate ;;   18) THEME_CHOICE=grayscale ;;
-        *) THEME_CHOICE=default ;;
-    esac
-
-    [ "$BACKEND_CHOICE" = "ytdlp" ] && \
-        printf '\n  \033[33mNote:\033[0m the yt-dlp backend needs yt-dlp installed (e.g. pip install yt-dlp).\n'
-    printf '\n'
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    B="$(printf '\033[1m')"; DIM="$(printf '\033[2m')"; R="$(printf '\033[0m')"
+    CY="$(printf '\033[36m')"; GR="$(printf '\033[32m')"; YE="$(printf '\033[33m')"
+else
+    B='' ; DIM='' ; R='' ; CY='' ; GR='' ; YE=''
 fi
 
-# Backend choice → build override read by the Makefile (survives the OIS sudo
-# re-exec because it lives in the project dir, not the environment).
-printf 'BACKEND := %s\n' "$BACKEND_CHOICE" > .ytcui-build.conf 2>/dev/null || true
+say()   { printf '%s\n' "$*"; }
+head_() { printf '\n%s%s%s\n' "$B" "$*" "$R"; }
 
-# UI mode + thumbnails → runtime config in the invoking user's config dir.
-# Written now, as the real user, before OIS elevates for a system install.
+INTERACTIVE=1
+for a in "$@"; do
+    case "$a" in --yes|-y|--json|--noninteractive) INTERACTIVE=0 ;; esac
+done
+[ -t 0 ] || INTERACTIVE=0
+
+ask() {
+    _q="$1"; shift
+    _n=$#
+    printf '\n%s%s%s\n' "$B" "$_q" "$R" >&2
+    _i=1
+    for _o in "$@"; do
+        if [ "$_i" = 1 ]; then printf '  %s%s)%s %s %s(default)%s\n' "$CY" "$_i" "$R" "$_o" "$DIM" "$R" >&2
+        else printf '  %s%s)%s %s\n' "$CY" "$_i" "$R" "$_o" >&2; fi
+        _i=$(( _i + 1 ))
+    done
+    while :; do
+        printf '%s> %s' "$GR" "$R" >&2
+        if ! IFS= read -r _ans; then _ans=""; fi
+        [ -z "$_ans" ] && { echo 1; return; }
+        case "$_ans" in
+            *[!0-9]*) ;;
+            *) if [ "$_ans" -ge 1 ] && [ "$_ans" -le "$_n" ]; then echo "$_ans"; return; fi ;;
+        esac
+        printf '%s  enter a number 1-%s%s\n' "$YE" "$_n" "$R" >&2
+    done
+}
+
+confirm() {
+    _q="$1"; _def="${2:-y}"
+    if [ "$_def" = y ]; then _hint="[Y/n]"; else _hint="[y/N]"; fi
+    printf '\n%s%s%s %s ' "$B" "$_q" "$R" "$_hint" >&2
+    if ! IFS= read -r _a; then _a=""; fi
+    [ -z "$_a" ] && _a="$_def"
+    case "$_a" in [Yy]*) return 0 ;; *) return 1 ;; esac
+}
+
+say ""
+say "${B}  ytcui installer${R}"
+say "${DIM}  a terminal YouTube client${R}"
+
+BACKEND="ytcuidl"
+THEME="default"
+NO_HA=0
+PKG_MGR=""
+
+OS="$(uname -s 2>/dev/null || echo unknown)"
+
+if [ "$INTERACTIVE" = 0 ]; then
+    say ""
+    say "${DIM}  non-interactive: defaults (ytcui-dl backend, default theme, HW accel on)${R}"
+else
+    if [ "$OS" = "Darwin" ]; then
+        c="$(ask "Which package manager should handle dependencies?" \
+                 "Homebrew" "MacPorts")"
+        if [ "$c" = 2 ]; then PKG_MGR="port"; else PKG_MGR="brew"; fi
+        # OIS handles the rest: it bootstraps the Xcode CLT, installs the
+        # chosen package manager if missing (Homebrew via the official
+        # script as your user; MacPorts via the correct version-matched
+        # .pkg), wires keg-only build flags, and adds ~/.local/bin to your
+        # PATH. We just record the preference for OIS to read.
+        export OIS_PKG_MANAGER="$PKG_MGR"
+        if [ "$PKG_MGR" = brew ] && ! command -v brew >/dev/null 2>&1; then
+            say "${DIM}  Homebrew not found -- OIS will offer to install it (as you, not root).${R}"
+        elif [ "$PKG_MGR" = port ] && ! command -v port >/dev/null 2>&1; then
+            say "${DIM}  MacPorts not found -- OIS will fetch the correct .pkg for your macOS.${R}"
+        fi
+    fi
+
+    c="$(ask "Which video backend?" \
+             "ytcui-dl  [built-in, no external deps, Experimental]" \
+             "yt-dlp    [mature, needs yt-dlp installed]")"
+    if [ "$c" = 2 ]; then BACKEND="ytdlp"; else BACKEND="ytcuidl"; fi
+
+    say ""
+    say "${B}Pick a colour theme${R}  ${DIM}(changeable anytime in-app with Ctrl-S)${R}"
+    _tn="default grayscale nord dracula solarized monokai gruvbox tokyo pink green blue purple red amber ocean mint coral slate"
+    printf '  %s1)%s default    %sbalanced, warm amber accents (default)%s\n'      "$CY" "$R" "$DIM" "$R"
+    printf '  %s2)%s grayscale  %sno colour, clean monochrome%s\n'                "$CY" "$R" "$DIM" "$R"
+    printf '  %s3)%s nord       %scool arctic blues and frost%s\n'                "$CY" "$R" "$DIM" "$R"
+    printf '  %s4)%s dracula    %sdark violet with vivid pink%s\n'                "$CY" "$R" "$DIM" "$R"
+    printf '  %s5)%s solarized  %smuted, low-contrast, easy on the eyes%s\n'      "$CY" "$R" "$DIM" "$R"
+    printf '  %s6)%s monokai    %sclassic editor greens and magentas%s\n'         "$CY" "$R" "$DIM" "$R"
+    printf '  %s7)%s gruvbox    %sretro earthy orange and green%s\n'              "$CY" "$R" "$DIM" "$R"
+    printf '  %s8)%s tokyo      %stokyo-night deep blue and purple%s\n'           "$CY" "$R" "$DIM" "$R"
+    printf '  %s9)%s pink       %ssolid hot pink accents%s\n'                     "$CY" "$R" "$DIM" "$R"
+    printf ' %s10)%s green      %ssolid terminal green%s\n'                       "$CY" "$R" "$DIM" "$R"
+    printf ' %s11)%s blue       %ssolid electric blue%s\n'                        "$CY" "$R" "$DIM" "$R"
+    printf ' %s12)%s purple     %ssolid royal purple%s\n'                         "$CY" "$R" "$DIM" "$R"
+    printf ' %s13)%s red        %ssolid crimson%s\n'                              "$CY" "$R" "$DIM" "$R"
+    printf ' %s14)%s amber      %ssolid warm amber%s\n'                           "$CY" "$R" "$DIM" "$R"
+    printf ' %s15)%s ocean      %sdeep teal and cyan%s\n'                         "$CY" "$R" "$DIM" "$R"
+    printf ' %s16)%s mint       %ssoft mint green%s\n'                            "$CY" "$R" "$DIM" "$R"
+    printf ' %s17)%s coral      %swarm coral and salmon%s\n'                      "$CY" "$R" "$DIM" "$R"
+    printf ' %s18)%s slate      %smuted blue-grey, understated%s\n'               "$CY" "$R" "$DIM" "$R"
+    while :; do
+        printf '%s> %s' "$GR" "$R"
+        if ! IFS= read -r tsel; then tsel=""; fi
+        [ -z "$tsel" ] && { THEME="default"; break; }
+        case "$tsel" in
+            *[!0-9]*) ;;
+            *) if [ "$tsel" -ge 1 ] && [ "$tsel" -le 18 ]; then
+                   THEME="$(echo "$_tn" | cut -d' ' -f"$tsel")"; break
+               fi ;;
+        esac
+        printf '%s  enter a number 1-18%s\n' "$YE" "$R"
+    done
+
+    if confirm "Enable mpv hardware (GPU) video acceleration?" y; then
+        NO_HA=0
+    else
+        NO_HA=1
+    fi
+
+    head_ "Ready to install"
+    say "  backend      ${CY}${BACKEND}${R}"
+    say "  theme        ${CY}${THEME}${R}"
+    say "  hw accel     ${CY}$([ "$NO_HA" = 1 ] && echo off || echo on)${R}"
+    [ -n "$PKG_MGR" ] && say "  pkg manager  ${CY}${PKG_MGR}${R}"
+    confirm "Proceed?" y || { say "${YE}cancelled.${R}"; exit 0; }
+fi
+
+# Backend -> Makefile include (survives OIS's sudo re-exec for --system).
+printf 'BACKEND = %s\n' "$BACKEND" > "$SELF/.ytcui-build.conf"
+
+# Theme + HW accel -> config.json seed (only if absent; never clobber).
 CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ytcui"
 CFG="$CFG_DIR/config.json"
-mkdir -p "$CFG_DIR" 2>/dev/null || true
-if command -v python3 >/dev/null 2>&1; then
-    MODE="$MODE_CHOICE" GFX="$GFX_CHOICE" THEME="$THEME_CHOICE" CFGP="$CFG" python3 - <<'PY' 2>/dev/null || true
-import json, os
-p = os.environ["CFGP"]; d = {}
-try:
-    with open(p) as f: d = json.load(f)
-except Exception:
-    d = {}
-d["mode"] = os.environ["MODE"]
-d["graphics"] = os.environ["GFX"]
-d["theme"] = os.environ["THEME"]
-if os.environ["GFX"] == "off":
-    d["show_thumbnails"] = False
-try:
-    with open(p, "w") as f: json.dump(d, f, indent=2)
-except Exception:
-    pass
-PY
-elif [ ! -f "$CFG" ]; then
-    cat > "$CFG" <<EOF
-{
-  "mode": "$MODE_CHOICE",
-  "graphics": "$GFX_CHOICE",
-  "theme": "$THEME_CHOICE"
-}
-EOF
+if [ ! -f "$CFG" ]; then
+    mkdir -p "$CFG_DIR"
+    {
+        printf '{\n'
+        printf '  "theme": "%s",\n' "$THEME"
+        printf '  "no_hardware_accel": %s\n' "$([ "$NO_HA" = 1 ] && echo true || echo false)"
+        printf '}\n'
+    } > "$CFG"
+    say "${DIM}  wrote $CFG${R}"
 else
-    printf '  (note: set "mode": "%s" in %s manually)\n' "$MODE_CHOICE" "$CFG"
+    if [ "$INTERACTIVE" = 1 ] && command -v sed >/dev/null 2>&1; then
+        if grep -q '"theme"' "$CFG" 2>/dev/null; then
+            tmp="$CFG.ois-tmp.$$"
+            sed "s/\"theme\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"theme\": \"$THEME\"/" "$CFG" > "$tmp" \
+                && mv "$tmp" "$CFG" && say "${DIM}  updated theme in existing $CFG${R}"
+        fi
+    fi
 fi
 
-exec sh OIS/OIS.sh install "$@"
+say ""
+exec sh "$SELF/ois/ois.sh" install "$@"

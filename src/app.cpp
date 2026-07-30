@@ -14,6 +14,34 @@
 
 namespace ytui {
 
+static const char* const kThemeNames[] = {
+    "default","grayscale","nord","dracula","solarized","monokai","gruvbox",
+    "tokyo","pink","green","blue","purple","red","amber","ocean","mint",
+    "coral","slate"
+};
+static const int kThemeCount = (int)(sizeof(kThemeNames)/sizeof(kThemeNames[0]));
+
+// Rebindable accelerators shown on the Accelerators tab. The pointer-to-member
+// lets us read and write the live Config::KeyBindings without a giant switch.
+struct AccelRow { const char* label; int Config::KeyBindings::* field; };
+static const AccelRow kAccelRows[] = {
+    {"Pause / resume",   &Config::KeyBindings::pause},
+    {"Volume up",        &Config::KeyBindings::volume_up},
+    {"Volume down",      &Config::KeyBindings::volume_down},
+    {"Seek forward",     &Config::KeyBindings::seek_fwd},
+    {"Seek backward",    &Config::KeyBindings::seek_back},
+    {"Search",           &Config::KeyBindings::search},
+    {"Scroll up",        &Config::KeyBindings::scroll_up},
+    {"Scroll down",      &Config::KeyBindings::scroll_down},
+    {"Jump to top",      &Config::KeyBindings::top},
+    {"Jump to bottom",   &Config::KeyBindings::bottom},
+    {"Sort menu",        &Config::KeyBindings::sort},
+    {"New playlist",     &Config::KeyBindings::new_playlist},
+    {"Quit",             &Config::KeyBindings::quit},
+};
+static const int kAccelCount = (int)(sizeof(kAccelRows)/sizeof(kAccelRows[0]));
+
+
 static inline void shell(const std::string& cmd) {
     int r = system(cmd.c_str()); (void)r;
 }
@@ -39,6 +67,10 @@ App::App(Theme theme) {
     srand(time(nullptr));
     config_.load();
 
+    // Point the input handler at the live keybindings so configured / rebound
+    // keys actually take effect. config_.keys stays valid for the App's life.
+    input_.set_keybindings(&config_.keys);
+
     // Priority: CLI flag > config file > default
     if (theme != Theme::Default) {
         // CLI flag wins — store it back into config so resolve_colors() uses it
@@ -55,6 +87,13 @@ App::App(Theme theme) {
 
     state_.grayscale = (state_.theme == Theme::Grayscale);
     config_.theme_name = theme_to_string(state_.theme); // keep in sync
+
+    // Persist the theme choice: next launch remembers it without --theme.
+    // Only writes if the theme actually differs from what's on disk, so
+    // launching without --theme doesn't clobber a saved choice.
+    if (theme != Theme::Default) {
+        config_.save();
+    }
 
     // Resolve final colors: base theme + any per-element custom_colors from config
     state_.resolved_colors = config_.resolve_colors();
@@ -379,6 +418,19 @@ int App::run() {
         state_.is_paused   = player_.is_paused();
         state_.now_playing = state_.is_playing ? player_.now_playing() : "";
 
+        // Refresh the IPC cache once per frame (non-blocking) and read progress
+        // from it. tick() also retries the socket connect until mpv is ready, so
+        // nothing here ever waits on mpv.
+        if (state_.is_playing) {
+            player_.tick();
+            state_.playback_pos = player_.get_position();
+            state_.playback_dur = player_.get_duration();
+            state_.playback_vol = player_.get_volume();
+        } else {
+            state_.playback_pos = 0;
+            state_.playback_dur = 0;
+        }
+
         // ── Resolve UI mode ───────────────────────────────────────────────────
         // Default is the full ("normal") UI. We only drop to the streamlined
         // music-player layout when the terminal is RELIABLY very narrow: a
@@ -423,6 +475,19 @@ int App::run() {
                 state_.home_selected_idx = 0;
         }
 
+        // Refresh the settings-UI display snapshot so the TUI can render the
+        // panel without depending on Config directly.
+        if (state_.show_settings) {
+            state_.settings_theme_names.assign(kThemeNames, kThemeNames + kThemeCount);
+            state_.settings_accel_labels.clear();
+            state_.settings_accel_keys.clear();
+            for (int i = 0; i < kAccelCount; i++) {
+                state_.settings_accel_labels.push_back(kAccelRows[i].label);
+                state_.settings_accel_keys.push_back(
+                    Config::key_display(config_.keys.*(kAccelRows[i].field)));
+            }
+        }
+
         tui_.render(state_, &library_);
 
         int ch = getch();
@@ -435,14 +500,50 @@ int App::run() {
             continue;
         }
 
+        // ── In-app settings UI (Ctrl-S) ───────────────────────────────────────
+        // Ctrl-S is byte 0x13 (also what Ctrl-Shift-S sends; terminals ignore
+        // Shift for control chars). Flow control was disabled in TUI::init so
+        // this reaches us instead of pausing terminal output.
+        if (ch == 0x13 && !state_.show_settings) {   // open
+            state_.show_settings = true;
+            state_.settings_tab  = 0;
+            state_.settings_sel  = 0;
+            state_.settings_capturing = false;
+            state_.settings_toast.clear();
+            continue;
+        }
+        if (state_.show_settings) {
+            handle_settings_key(ch);
+            continue;   // settings UI owns all keys while open
+        }
+
         bool should_search = input_.handle(ch, state_);
 
         // ── Status message dispatch ───────────────────────────────────────────
 
         if (state_.status_message == "__PAUSE_TOGGLE__") {
+            Log::write("[key] pause toggle (is_playing=%d)", (int)player_.is_playing());
             player_.toggle_pause();
             state_.is_paused = player_.is_paused();
             state_.status_message = state_.is_paused ? "Paused (*-_-*)" : "Resumed (^_^)b";
+        }
+        else if (state_.status_message == "__VOLUME_UP__") {
+            player_.volume_up(5);
+            char vbuf[32]; snprintf(vbuf, sizeof(vbuf), "Volume: %d%%", player_.get_volume());
+            state_.status_message = vbuf;
+        }
+        else if (state_.status_message == "__VOLUME_DOWN__") {
+            player_.volume_down(5);
+            char vbuf[32]; snprintf(vbuf, sizeof(vbuf), "Volume: %d%%", player_.get_volume());
+            state_.status_message = vbuf;
+        }
+        else if (state_.status_message == "__SEEK_FWD__") {
+            player_.seek_forward(10.0);
+            state_.status_message = ">> +10s";
+        }
+        else if (state_.status_message == "__SEEK_BACK__") {
+            player_.seek_backward(10.0);
+            state_.status_message = "<< -10s";
         }
 
         // ── Streamlined-mode section loaders & playback ───────────────────────
@@ -1100,6 +1201,117 @@ void App::copy_to_clipboard(const std::string& text) {
     if (!ok)
         Log::write("clipboard: all tools failed — run 'ytcui --diag' for help");
 #endif
+}
+
+// ─── In-app settings: live theme + accelerators (Ctrl-S) ──────────────────────
+
+// All 18 selectable themes, in display order. Index maps to settings_sel on
+// the Theme tab.
+
+void App::apply_theme_live(const std::string& theme_name) {
+    config_.theme_name = theme_name;
+    state_.theme       = config_.get_theme();
+    state_.grayscale   = (state_.theme == Theme::Grayscale);
+    // Recompute the palette; the next render() calls setup_colors() with it.
+    state_.resolved_colors = config_.resolve_colors();
+}
+
+void App::handle_settings_key(int ch) {
+    // getch() returns ERR (-1) on the input timeout when no key was pressed.
+    // It must never be treated as a keypress — otherwise, while capturing a
+    // rebind, an idle timeout would "bind" ERR and later crash JSON save with
+    // an invalid byte. Ignore it entirely.
+    if (ch == ERR) return;
+
+    state_.settings_toast.clear();
+
+    // While capturing a key for a rebind, the NEXT keypress becomes the binding
+    // — but with guards. Some keys can't be bound (they'd make the UI or the
+    // process uncontrollable), and the Enter that STARTED the capture must not
+    // register as the bound key.
+    if (state_.settings_capturing) {
+        // Enter/CR/LF: this is almost always the residue of the Enter press
+        // that began the capture (terminals send CR+LF; ncurses can deliver the
+        // trailing newline on the next read). Ignore it and keep waiting, so we
+        // never bind an action to Enter by accident. Enter is reserved anyway.
+        if (ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            state_.settings_toast = "Enter can't be bound — press another key";
+            return;   // stay in capture mode
+        }
+        if (ch == 27) {                     // Esc cancels the capture
+            state_.settings_capturing = false;
+            state_.settings_toast = "rebind cancelled";
+            return;
+        }
+        // Reserved / un-bindable keys. Binding any of these would break the app
+        // or the terminal: Ctrl-C (SIGINT), Ctrl-Z (SIGTSTP), Ctrl-S (opens
+        // this very panel), Ctrl-\ (SIGQUIT). Refuse and keep waiting.
+        if (ch == 3 || ch == 26 || ch == 0x13 || ch == 28) {
+            const char* nm = (ch == 3)  ? "Ctrl-C" :
+                             (ch == 26) ? "Ctrl-Z" :
+                             (ch == 0x13)? "Ctrl-S" : "Ctrl-\\";
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%s is reserved — press another key", nm);
+            state_.settings_toast = buf;
+            return;   // stay in capture mode
+        }
+        // A valid key — bind it.
+        if (state_.settings_sel >= 0 && state_.settings_sel < kAccelCount) {
+            config_.keys.*(kAccelRows[state_.settings_sel].field) = ch;
+            config_.save();
+            char buf[64];
+            snprintf(buf, sizeof(buf), "bound '%s' to %s",
+                     kAccelRows[state_.settings_sel].label,
+                     Config::key_display(ch).c_str());
+            state_.settings_toast = buf;
+        }
+        state_.settings_capturing = false;
+        return;
+    }
+
+    switch (ch) {
+        case 0x13:                          // Ctrl-S again closes
+        case 27:                            // Esc closes
+        case 'q':
+            state_.show_settings = false;
+            config_.save();                 // persist theme + any binding changes
+            return;
+
+        case '\t':                          // Tab switches sub-tabs
+            state_.settings_tab = (state_.settings_tab + 1) % 2;
+            state_.settings_sel = 0;
+            return;
+
+        case KEY_UP: case 'k':
+            if (state_.settings_sel > 0) state_.settings_sel--;
+            return;
+
+        case KEY_DOWN: case 'j': {
+            int n = (state_.settings_tab == 0) ? kThemeCount : kAccelCount;
+            if (state_.settings_sel < n - 1) state_.settings_sel++;
+            return;
+        }
+
+        case '\n': case '\r': case KEY_ENTER: case ' ':
+            if (state_.settings_tab == 0) {
+                // Theme tab: apply the highlighted theme instantly.
+                if (state_.settings_sel >= 0 && state_.settings_sel < kThemeCount) {
+                    apply_theme_live(kThemeNames[state_.settings_sel]);
+                    state_.settings_toast = std::string("theme: ") +
+                                            kThemeNames[state_.settings_sel];
+                }
+            } else {
+                // Accelerators tab: begin capturing the next key.
+                state_.settings_capturing = true;
+                state_.settings_toast = "press a key to bind (Esc to cancel)";
+            }
+            return;
+
+        default:
+            // On the Theme tab, live-preview as the cursor moves via arrows is
+            // handled above; nothing else to do here.
+            return;
+    }
 }
 
 } // namespace ytui

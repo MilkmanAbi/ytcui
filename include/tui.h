@@ -82,6 +82,9 @@ private:
     void draw_actions_panel(const AppState& state);
     void draw_info_panel(const AppState& state, int px, int py, int pw, int ph, bool with_thumb);
     void draw_message_bar(const AppState& state);
+    void draw_shortcuts(const AppState& state);
+    void draw_settings(const AppState& state);
+    void fill_rect(int y, int x, int h, int w, int cp);
     void draw_browser_popup(const AppState& state);
     void draw_sort_menu(const AppState& state);
     void draw_save_prompt(const AppState& state);

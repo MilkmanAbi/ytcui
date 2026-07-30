@@ -209,6 +209,7 @@ $(OBJ_DIR)/app.o:     $(SRC_DIR)/app.cpp     $(INC_DIR)/app.h $(INC_DIR)/types.h
 $(OBJ_DIR)/config.o:  $(SRC_DIR)/config.cpp  $(INC_DIR)/config.h $(INC_DIR)/theme.h
 $(OBJ_DIR)/input.o:   $(SRC_DIR)/input.cpp   $(INC_DIR)/input.h $(INC_DIR)/types.h
 $(OBJ_DIR)/main.o:    $(SRC_DIR)/main.cpp    $(INC_DIR)/app.h $(INC_DIR)/log.h $(INC_DIR)/player.h $(INC_DIR)/youtube.h $(INC_DIR)/types.h $(INC_DIR)/theme.h
-$(OBJ_DIR)/player.o:  $(SRC_DIR)/player.cpp  $(INC_DIR)/player.h $(INC_DIR)/compat.h $(INC_DIR)/types.h $(INC_DIR)/log.h
+$(OBJ_DIR)/mpv_ipc.o: $(SRC_DIR)/mpv_ipc.cpp $(INC_DIR)/mpv_ipc.h $(INC_DIR)/log.h
+$(OBJ_DIR)/player.o:  $(SRC_DIR)/player.cpp  $(INC_DIR)/player.h $(INC_DIR)/mpv_ipc.h $(INC_DIR)/compat.h $(INC_DIR)/types.h $(INC_DIR)/log.h
 $(OBJ_DIR)/tui.o:     $(SRC_DIR)/tui.cpp     $(INC_DIR)/tui.h $(INC_DIR)/types.h $(INC_DIR)/library.h $(INC_DIR)/thumbs.h $(INC_DIR)/theme.h
 $(OBJ_DIR)/youtube.o: $(SRC_DIR)/youtube.cpp $(INC_DIR)/youtube.h $(INC_DIR)/types.h $(INC_DIR)/log.h

@@ -505,86 +505,74 @@ static void print_version() {
     printf("ytcui %s\n", ytui::VERSION);
 }
 
-static void print_help(const Ansi&) {
-    printf(
-        "ytcui %s - YouTube terminal UI\n"
-        "\n"
-        "USAGE\n"
-        "    ytcui [options]\n"
-        "\n"
-        "GENERAL\n"
-        "    -h, --help                  show this help\n"
-        "    -v, --version               show version\n"
-        "    -t, --theme <name>          set color theme\n"
-        "    -g, --grayscale             grayscale theme (legacy)\n"
-        "    --mlterm                    treat terminal as mlterm: strict B&W, no\n"
-        "                                highlighting/bold, no thumbnails (compat)\n"
-        "    --mono, --bw                strict black & white colour theme\n"
-        "    --gfx <mode>                thumbnail mode: auto|blocks|sixel|kitty|iterm|off\n"
-        "    --mode <mode>               UI mode: auto|normal|streamlined (auto = music-player UI when narrow)\n"
-        "    --colors                    list all color elements + config example\n"
-        "\n"
-        "DEBUG\n"
-        "    -d, --debug                 write debug log to ~/.cache/ytcui/debug.log\n"
-        "    --logdump                   write full timestamped log to ~/ytcui-DATE.log\n"
-        "                                captures all events and mpv/yt-dlp stderr\n"
-        "                                implies --debug, no separate flag needed\n"
-        "    --diag                      print full system diagnostic and exit\n"
-        "    --injectconfig key=value    write config values without opening the TUI\n"
-        "                                keys: max_results, theme, grayscale, sort_by,\n"
-        "                                      filter_type, filter_dur, ytdlp_path, mpv_path\n"
-        "\n"
-        "PLAYBACK  (session only, nothing is saved to config)\n"
-        "    --no-ha                     disable mpv hardware acceleration\n"
-        "    --no-cache                  disable mpv demuxer cache\n"
-        "    --mpv-verbose               do not silence mpv terminal output\n"
-        "    --volume <0-130>            set volume for this session (default: 80)\n"
-        "\n"
-        "OTHER\n"
-        "    --no-update-check           skip the startup version check\n"
-        "    --upgrade                   upgrade ytcui to the latest version\n"
-        "\n"
-        "THEMES\n"
-        "    default, grayscale, nord, dracula, solarized, monokai, gruvbox, tokyo,\n"
-        "    pink, green, blue, purple, red, amber, ocean, mint, coral, slate\n"
-        "\n"
-        "KEYS\n"
-        "    Tab       cycle focus between panels\n"
-        "    j / k     move down / up\n"
-        "    h / l     move left / right\n"
-        "    Enter     search or select\n"
-        "    p         pause / resume playback\n"
-        "    s         sort and filter menu\n"
-        "    /         jump to search bar\n"
-        "    Esc       go back\n"
-        "    q         quit\n"
-        "\n"
-        "FILES\n"
-        "    config    ~/.config/ytcui/config.json\n"
-        "    library   ~/.local/share/ytcui/\n"
-        "    cache     ~/.cache/ytcui/\n"
-        "    log       ~/.cache/ytcui/debug.log\n"
-        "    logdump   ~/ytcui-YYYYMMDD-HHMMSS.log\n"
-        "\n"
-        "EXAMPLES\n"
-        "    ytcui --diag\n"
-        "    ytcui --logdump\n"
-        "    ytcui --no-ha --no-cache\n"
-        "    ytcui --theme dracula\n"
-        "    ytcui --volume 50\n"
-        "    ytcui --injectconfig max_results=25 theme=nord\n"
-        "\n"
-        "MLTERM COMPAT\n"
-        "    mlterm is auto-detected at startup (it can't render colour themes,\n"
-        "    bold, or thumbnails without garbling), so on mlterm ytcui drops to\n"
-        "    strict black & white automatically while other terminals keep their\n"
-        "    colours and thumbnails. No setup needed. If your mlterm somehow isn't\n"
-        "    detected, or you just want black & white everywhere:\n"
-        "    ytcui --mlterm                 force strict B&W for this run\n"
-        "    ytcui --injectconfig mlterm    make strict B&W the saved default\n"
-        "\n",
-        ytui::VERSION
-    );
+static void print_help(const Ansi& C) {
+    // A clean, grouped help screen. Colour when stdout is a TTY (via Ansi),
+    // plain text when piped. Two-column layout: flag on the left, description
+    // on the right, aligned. No ncurses — this is just stdout.
+    printf("%s%sytcui%s %s  %s— a terminal YouTube client%s\n\n",
+           C.BOLD, C.CYAN, C.RESET, ytui::VERSION, C.DIM, C.RESET);
+
+    printf("%sUsage%s\n", C.BOLD, C.RESET);
+    printf("  ytcui [options]        %sstart the app%s\n", C.DIM, C.RESET);
+    printf("  ytcui --theme dracula  %spick a colour theme%s\n", C.DIM, C.RESET);
+    printf("  ytcui --diag           %sprint a system diagnostic and exit%s\n\n", C.DIM, C.RESET);
+
+    printf("%sGeneral%s\n", C.BOLD, C.RESET);
+    printf("  %s-h, --help%s          show this help\n", C.GREEN, C.RESET);
+    printf("  %s-v, --version%s       show version\n", C.GREEN, C.RESET);
+    printf("  %s-t, --theme%s <name>  set colour theme (see Themes below)\n", C.GREEN, C.RESET);
+    printf("  %s--mode%s <mode>       ui mode: auto | normal | streamlined\n", C.GREEN, C.RESET);
+    printf("  %s--gfx%s <mode>        thumbnails: auto | blocks | sixel | kitty | iterm | off\n", C.GREEN, C.RESET);
+    printf("  %s--mono%s, %s--bw%s       strict black & white\n", C.GREEN, C.RESET, C.GREEN, C.RESET);
+    printf("  %s--colors%s            list colour elements + a config example\n\n", C.GREEN, C.RESET);
+
+    printf("%sPlayback%s %s(this session only)%s\n", C.BOLD, C.RESET, C.DIM, C.RESET);
+    printf("  %s--volume%s <0-130>    starting volume (default 80)\n", C.GREEN, C.RESET);
+    printf("  %s--no-ha%s             disable mpv hardware acceleration\n", C.GREEN, C.RESET);
+    printf("  %s--no-cache%s          disable mpv demuxer cache\n", C.GREEN, C.RESET);
+    printf("  %s--mpv-verbose%s       don't silence mpv's own output\n\n", C.GREEN, C.RESET);
+
+    printf("%sInstall / update%s\n", C.BOLD, C.RESET);
+    printf("  %s--upgrade%s           update ytcui to the latest release\n", C.GREEN, C.RESET);
+    printf("  %s--no-update-check%s   skip the startup version check\n", C.GREEN, C.RESET);
+    printf("  %s--ois%s               manage the install (OIS)\n", C.GREEN, C.RESET);
+    printf("  %s--uninstall%s         remove ytcui\n\n", C.GREEN, C.RESET);
+
+    printf("%sConfig%s\n", C.BOLD, C.RESET);
+    printf("  %s--injectconfig%s k=v  set a config value without opening the app\n", C.GREEN, C.RESET);
+    printf("  %s-d, --debug%s         write a debug log to ~/.cache/ytcui/debug.log\n", C.GREEN, C.RESET);
+    printf("  %s--logdump%s           write a full timestamped log to ~/ytcui-DATE.log\n", C.GREEN, C.RESET);
+    printf("  %s(tip)%s               press %sCtrl-S%s inside the app to open live settings\n",
+           C.DIM, C.RESET, C.CYAN, C.RESET);
+    printf("                       %s— change themes, remap keys, toggle options on the fly%s\n\n",
+           C.DIM, C.RESET);
+
+    printf("%sKeys%s %s(press %s?%s%s in-app for the full list)%s\n",
+           C.BOLD, C.RESET, C.DIM, C.RESET, C.DIM, C.DIM, C.RESET);
+    printf("  %sSpace / p%s   pause / resume        %s+  -%s   volume up / down\n",
+           C.CYAN, C.RESET, C.CYAN, C.RESET);
+    printf("  %s<  >%s        seek back / forward    %s/%s     search\n",
+           C.CYAN, C.RESET, C.CYAN, C.RESET);
+    printf("  %sj / k%s       move down / up         %sTab%s   cycle panels\n",
+           C.CYAN, C.RESET, C.CYAN, C.RESET);
+    printf("  %sEnter%s       select                 %sEsc%s   back\n",
+           C.CYAN, C.RESET, C.CYAN, C.RESET);
+    printf("  %sCtrl-S%s      settings (theme + keys) %sq%s     quit\n\n",
+           C.CYAN, C.RESET, C.CYAN, C.RESET);
+
+    printf("%sThemes%s %s(or change live in-app with Ctrl-S)%s\n", C.BOLD, C.RESET, C.DIM, C.RESET);
+    printf("  default  grayscale  nord  dracula  solarized  monokai  gruvbox\n");
+    printf("  tokyo  pink  green  blue  purple  red  amber  ocean  mint  coral  slate\n\n");
+
+    printf("%sFiles%s\n", C.BOLD, C.RESET);
+    printf("  config    ~/.config/ytcui/config.json\n");
+    printf("  library   ~/.local/share/ytcui/\n");
+    printf("  cache     ~/.cache/ytcui/\n\n");
+
+    printf("%sMore%s\n", C.BOLD, C.RESET);
+    printf("  project   https://github.com/MilkmanAbi/ytcui\n");
+    printf("  %smlterm terminals are auto-detected and fall back to B&W; no setup needed.%s\n",
+           C.DIM, C.RESET);
 }
 
 
@@ -749,6 +737,14 @@ int main(int argc, char* argv[]) {
     std::string gfx_mode;             // --gfx auto|blocks|sixel|kitty|iterm|off
     std::string ui_mode;              // --mode auto|normal|streamlined
     ytui::PlayerOptions player_opts;  // defaults: vol=80, hwdec=auto, cache=on
+
+    // Seed hardware-accel preference from config.json (written by the
+    // installer). A --no-ha flag below still overrides it for this run.
+    {
+        ytui::Config seed_cfg;
+        seed_cfg.load();
+        player_opts.no_hardware_accel = seed_cfg.no_hardware_accel;
+    }
 
     for (int i = 0; i < (int)args.size(); i++) {
         const std::string& a = args[i];

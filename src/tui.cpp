@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <unistd.h>
+#include <termios.h>
 #include <sstream>
 #include <wchar.h>
 
@@ -125,7 +126,19 @@ TUI::~TUI() { shutdown(); }
 bool TUI::init() {
     if (initialized_) return true;
     initscr(); cbreak(); noecho(); keypad(stdscr, TRUE); curs_set(0);
-    nodelay(stdscr, FALSE); timeout(100); set_escdelay(25);
+    nodelay(stdscr, FALSE); timeout(33); set_escdelay(25);
+
+    // Disable software flow control (IXON/IXOFF). Without this, Ctrl-S is
+    // eaten by the terminal as XOFF (freezing output) and Ctrl-Q as XON,
+    // so the settings shortcut (Ctrl-S) would never reach the app and could
+    // appear to hang ytcui. cbreak() leaves these on; we clear them here.
+    {
+        struct termios t;
+        if (tcgetattr(STDIN_FILENO, &t) == 0) {
+            t.c_iflag &= ~(IXON | IXOFF | IXANY);
+            tcsetattr(STDIN_FILENO, TCSANOW, &t);
+        }
+    }
 
     // Now that terminfo is live, pull authoritative colour/flag facts.
     TermCaps::refine_from_ncurses();
@@ -134,8 +147,15 @@ bool TUI::init() {
     // Mouse: only enable when the terminal supports SGR mouse reporting. On
     // terminals that don't (e.g. the Linux console), enabling it spews escape
     // bytes into the input stream as garbage keypresses.
+    //
+    // We request ONLY button events, never REPORT_MOUSE_POSITION. Movement
+    // reporting (xterm mode 1003) floods stdin with an SGR report on every
+    // cursor move; at a fast input poll those can arrive split across reads and
+    // the tail bytes leak onto the screen as garbage like "0;48;9M". ytcui only
+    // uses clicks and the scroll wheel, so movement events are pure downside.
     if (caps.mouse_sgr) {
-        mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, nullptr);
+        mousemask(BUTTON1_PRESSED | BUTTON1_CLICKED |
+                  BUTTON4_PRESSED | BUTTON5_PRESSED, nullptr);
         mouseinterval(0);
         mouse_enabled_ = true;
     }
@@ -391,6 +411,12 @@ void TUI::render(const AppState& state, const Library* lib) {
     // Narrow terminal: hand off to the minimalist music-player layout.
     if (state.ui_mode == 1) {
         render_streamlined(state, lib);
+        // Popups must render on top in streamlined mode too — previously this
+        // returned early and skipped them, so shortcuts (?) and settings
+        // (Ctrl-S) were invisible in narrow terminals. (The progress bar is
+        // drawn inside the streamlined Playing screen itself.)
+        if (state.show_shortcuts) draw_shortcuts(state);
+        if (state.show_settings)  draw_settings(state);
         refresh();
         flush_graphics();
         return;
@@ -427,6 +453,8 @@ void TUI::render(const AppState& state, const Library* lib) {
     if (state.focus == Panel::SavePrompt)   draw_save_prompt(state);
     if (state.focus == Panel::PlaylistPick) draw_playlist_picker(state);
     if (state.focus == Panel::NewPlaylist)  draw_new_playlist_prompt(state);
+    if (state.show_shortcuts)              draw_shortcuts(state);
+    if (state.show_settings)               draw_settings(state);
     refresh();
     flush_graphics();   // emit raster thumbnails (Sixel/Kitty/iTerm) post-refresh
 }
@@ -934,26 +962,81 @@ void TUI::draw_info_panel(const AppState& state, int px, int py, int pw, int ph,
     if (!v.upload_date.empty()) line(Color::PUBLISHED, "Published " + v.upload_date);
 }
 
-// ─── Message bar ──────────────────────────────────────────────────────────────
+// ─── Format mm:ss ─────────────────────────────────────────────────────────────
+static std::string fmt_time(double secs) {
+    if (secs < 0) return "--:--";
+    int s = (int)secs;
+    int m = s / 60; s %= 60;
+    int h = m / 60; m %= 60;
+    char buf[32];
+    if (h > 0) snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, s);
+    else       snprintf(buf, sizeof(buf), "%d:%02d", m, s);
+    return buf;
+}
+
+// ─── Message bar (with progress bar when playing) ─────────────────────────────
 void TUI::draw_message_bar(const AppState& state) {
     int y = state.term_h - 3, w = state.term_w;
     if (y < 0 || w < 4) return;
     int bc = state.is_playing ? (state.is_paused ? Color::STATS : Color::ACCENT) : Color::BG;
     draw_box(y, 0, 3, w, bc);
 
-    std::string msg;
     if (state.is_playing && !state.now_playing.empty()) {
-        msg = state.is_paused
-            ? "[Paused]: " + state.now_playing + "  (p to resume)"
-            : "[Now Playing]: " + state.now_playing + "  (p to pause)";
+        // Line 1: title + status
+        std::string label = state.is_paused ? "[||] " : "[>] ";
+        std::string title_line = label + state.now_playing;
+
+        // Volume indicator on the right
+        char vol_buf[16];
+        snprintf(vol_buf, sizeof(vol_buf), " Vol:%d%%", state.playback_vol);
+        int title_max = w - 2 - (int)strlen(vol_buf);
+        if (title_max < 10) title_max = w - 2;
+
+        attron(COLOR_PAIR(Color::BG));
+        mvprintw(y + 1, 1, "%s", utf8_truncate(title_line, title_max).c_str());
+
+        if (title_max < w - 2) {
+            mvprintw(y + 1, w - 1 - (int)strlen(vol_buf), "%s", vol_buf);
+        }
+        attroff(COLOR_PAIR(Color::BG));
+
+        // Line 2: progress bar (if we have duration info)
+        if (state.playback_dur > 0.5) {
+            std::string elapsed = fmt_time(state.playback_pos);
+            std::string total   = fmt_time(state.playback_dur);
+            std::string times   = elapsed + "/" + total;
+
+            int bar_start = 2;
+            int bar_end   = w - 2 - (int)times.size() - 1;
+            int bar_w     = bar_end - bar_start;
+
+            if (bar_w >= 10) {
+                double frac = state.playback_pos / state.playback_dur;
+                if (frac < 0) frac = 0;
+                if (frac > 1) frac = 1;
+                int filled = (int)(frac * bar_w);
+
+                // Draw the bar
+                attron(COLOR_PAIR(Color::ACCENT));
+                mvaddch(y + 2, bar_start - 1, ACS_LRCORNER);
+                for (int i = 0; i < bar_w; i++) {
+                    if (i < filled)
+                        mvaddch(y + 2, bar_start + i, ACS_BLOCK);
+                    else
+                        mvaddch(y + 2, bar_start + i, ACS_HLINE);
+                }
+                attroff(COLOR_PAIR(Color::ACCENT));
+
+                // Time stamps
+                attron(COLOR_PAIR(Color::STATS));
+                mvprintw(y + 2, bar_end + 1, "%s", times.c_str());
+                attroff(COLOR_PAIR(Color::STATS));
+            }
+        }
     } else if (!state.status_message.empty() && state.status_message.size() >= 2
                && state.status_message.substr(0, 2) != "__") {
-        msg = state.status_message;
-    }
-
-    if (!msg.empty()) {
         attron(COLOR_PAIR(Color::BG));
-        mvprintw(y + 1, 1, "%s", utf8_truncate(msg, w - 2).c_str());
+        mvprintw(y + 1, 1, "%s", utf8_truncate(state.status_message, w - 2).c_str());
         attroff(COLOR_PAIR(Color::BG));
     }
 }
@@ -1075,6 +1158,19 @@ void TUI::draw_browser_popup(const AppState& state) {
 // ─── Box drawing ──────────────────────────────────────────────────────────────
 // Uses the Border glyph set (Unicode in UTF-8 locales, ASCII otherwise) —
 // never ACS_* (see tui.h).
+// Fill a rectangle with blanks in the given colour pair so a popup is OPAQUE —
+// otherwise whatever's underneath shows through the "box" (which only draws a
+// border) and text from the layer below spills into it.
+void TUI::fill_rect(int y, int x, int h, int w, int cp) {
+    if (w < 1 || h < 1 || x < 0 || y < 0) return;
+    attron(COLOR_PAIR(cp));
+    for (int r = 0; r < h; r++) {
+        move(y + r, x);
+        for (int c = 0; c < w; c++) addch(' ');
+    }
+    attroff(COLOR_PAIR(cp));
+}
+
 void TUI::draw_box(int y, int x, int h, int w, int cp) {
     if (w < 2 || h < 2 || x < 0 || y < 0) return;
     attron(COLOR_PAIR(cp));
@@ -1462,6 +1558,177 @@ void TUI::stream_status(const AppState& state) {
                 COLOR_PAIR(Color::STATUS) | A_DIM);
 }
 
+// ─── In-app settings UI (Ctrl-S) ──────────────────────────────────────────────
+void TUI::draw_settings(const AppState& state) {
+    // Adapt to the terminal: full-ish width, but never overflow. On very
+    // narrow (streamlined) terminals we shrink to fit rather than spilling.
+    int pw = 60, ph = 22;
+    if (pw > state.term_w - 2) pw = state.term_w - 2;
+    if (ph > state.term_h - 2) ph = state.term_h - 2;
+    if (pw < 20 || ph < 8) {          // too small to draw a useful panel
+        // Minimal fallback: a one-line hint so the user isn't stuck.
+        fill_rect(state.term_h / 2, 0, 1, state.term_w, Color::BG);
+        attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
+        mvprintw(state.term_h / 2, 1, "%s",
+                 utf8_truncate("Settings need a wider terminal", state.term_w - 2).c_str());
+        attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
+        return;
+    }
+    int px = std::max(0, (state.term_w - pw) / 2);
+    int py = std::max(0, (state.term_h - ph) / 2);
+
+    fill_rect(py, px, ph, pw, Color::BG);   // opaque background
+    draw_box(py, px, ph, pw, Color::BG);
+
+    // Title
+    attron(COLOR_PAIR(Color::HEADER) | A_BOLD);
+    mvprintw(py, px + (pw - 10) / 2, " Settings ");
+    attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
+
+    // Tab bar
+    const char* tabs[2] = {"Theme", "Accelerators"};
+    int tx = px + 2;
+    for (int t = 0; t < 2; t++) {
+        bool active = (state.settings_tab == t);
+        if (active) attron(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
+        else        attron(COLOR_PAIR(Color::STATS));
+        mvprintw(py + 1, tx, " %s ", tabs[t]);
+        if (active) attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
+        else        attroff(COLOR_PAIR(Color::STATS));
+        tx += (int)strlen(tabs[t]) + 3;
+    }
+
+    int list_top = py + 3;
+    int list_rows = ph - 5;   // leave room for title, tabs, footer
+
+    if (state.settings_tab == 0) {
+        // ── Theme tab: scrollable list, live-applies on Enter/move ──
+        int n = (int)state.settings_theme_names.size();
+        int sel = state.settings_sel;
+        int first = 0;
+        if (sel >= list_rows) first = sel - list_rows + 1;
+        if (first < 0) first = 0;
+
+        for (int i = 0; i < list_rows && first + i < n; i++) {
+            int idx = first + i;
+            int y = list_top + i;
+            bool cur = (idx == sel);
+            const std::string& name = state.settings_theme_names[idx];
+            if (cur) {
+                paint_sel_bar(y, px + 1, pw - 2);
+                attron(sel_attr());
+                mvprintw(y, px + 2, "%-*s", pw - 4, name.c_str());
+                attroff(sel_attr());
+            } else {
+                attron(COLOR_PAIR(Color::BG));
+                mvprintw(y, px + 3, "%s", name.c_str());
+                attroff(COLOR_PAIR(Color::BG));
+            }
+        }
+    } else {
+        // ── Accelerators tab: label ............ key ──
+        int n = (int)state.settings_accel_labels.size();
+        int sel = state.settings_sel;
+        int first = 0;
+        if (sel >= list_rows) first = sel - list_rows + 1;
+        if (first < 0) first = 0;
+
+        for (int i = 0; i < list_rows && first + i < n; i++) {
+            int idx = first + i;
+            int y = list_top + i;
+            bool cur = (idx == sel);
+            const std::string& label = state.settings_accel_labels[idx];
+            const std::string& key   = (idx < (int)state.settings_accel_keys.size())
+                                        ? state.settings_accel_keys[idx] : "";
+            int keycol = px + pw - 3 - (int)key.size();
+            if (cur) {
+                paint_sel_bar(y, px + 1, pw - 2);
+                attron(sel_attr());
+                mvprintw(y, px + 2, "%s", label.c_str());
+                mvprintw(y, keycol, "%s", key.c_str());
+                attroff(sel_attr());
+            } else {
+                attron(COLOR_PAIR(Color::BG));
+                mvprintw(y, px + 3, "%s", label.c_str());
+                attroff(COLOR_PAIR(Color::BG));
+                attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
+                mvprintw(y, keycol, "%s", key.c_str());
+                attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
+            }
+        }
+    }
+
+    // Footer: toast (if any) else the key hints
+    attron(COLOR_PAIR(Color::STATS));
+    if (!state.settings_toast.empty()) {
+        mvprintw(py + ph - 2, px + 2, "%s",
+                 utf8_truncate(state.settings_toast, pw - 4).c_str());
+    } else if (state.settings_capturing) {
+        mvprintw(py + ph - 2, px + 2, "press a key to bind  (Esc cancels)");
+    }
+    const char* hint = (state.settings_tab == 0)
+        ? "Tab: switch   j/k: move   Enter: apply theme   Ctrl-S/q: close"
+        : "Tab: switch   j/k: move   Enter: rebind   Ctrl-S/q: close";
+    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(hint, pw - 4).c_str());
+    attroff(COLOR_PAIR(Color::STATS));
+}
+
+// ─── Shortcuts reference panel ─────────────────────────────────────────────────
+void TUI::draw_shortcuts(const AppState& state) {
+    struct KB { const char* key; const char* action; };
+    static const KB bindings[] = {
+        // navigation
+        {"j / Down",  "move down"},
+        {"k / Up",    "move up"},
+        {"l / Right / Enter", "select / open actions"},
+        {"h / Left / Backspace", "back"},
+        {"g",         "jump to top"},
+        {"G",         "jump to bottom"},
+        {"Tab",       "cycle focus (search -> tabs -> results)"},
+        {"Escape",    "navigate outward / cancel"},
+        {"/",         "focus search"},
+        // playback
+        {"Space / p",     "pause / resume (instant via mpv IPC)"},
+        {"+",         "volume up (+5%)"},
+        {"-",         "volume down (-5%)"},
+        {">",         "seek forward 10s"},
+        {"<",         "seek backward 10s"},
+        // actions
+        {"s",         "sort menu"},
+        {"n",         "new playlist (in playlist view)"},
+        {"q",         "quit"},
+        {"?",         "this panel"},
+    };
+    int n = sizeof(bindings) / sizeof(bindings[0]);
+    int pw = 52, ph = n + 4;
+    int px = std::max(0, (state.term_w - pw) / 2);
+    int py = std::max(0, (state.term_h - ph) / 2);
+    if (pw > state.term_w - 2) pw = state.term_w - 2;
+    if (ph > state.term_h - 2) ph = state.term_h - 2;
+
+    // Draw border
+    fill_rect(py, px, ph, pw, Color::BG);   // opaque background
+    draw_box(py, px, ph, pw, Color::BG);
+    attron(COLOR_PAIR(Color::HEADER) | A_BOLD);
+    mvprintw(py, px + (pw - 12) / 2, " Shortcuts ");
+    attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
+
+    // Draw bindings
+    int max_rows = ph - 3;
+    for (int i = 0; i < n && i < max_rows; i++) {
+        attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
+        mvprintw(py + 2 + i, px + 2, "%-22s", bindings[i].key);
+        attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
+        attron(COLOR_PAIR(Color::STATS));
+        mvprintw(py + 2 + i, px + 24, "%s", bindings[i].action);
+        attroff(COLOR_PAIR(Color::STATS));
+    }
+
+    attron(COLOR_PAIR(Color::STATS));
+    mvprintw(py + ph - 1, px + (pw - 22) / 2, " press any key to close ");
+    attroff(COLOR_PAIR(Color::STATS));
+}
+
 void TUI::render_streamlined(const AppState& state, const Library* lib) {
     switch ((StreamScreen)state.stream_screen) {
         case StreamScreen::Menu:    stream_menu(state, lib); break;
@@ -1642,20 +1909,37 @@ void TUI::stream_playing(const AppState& state) {
         y += art_rows + 1;
     } else { y = 2; }
 
-    // Stylized waveform + time labels (elapsed unknown → 0:00; right = total/LIVE).
+    // Progress waveform + real time labels. When mpv IPC is live we show the
+    // true elapsed/total and fill the bar to match; otherwise we fall back to
+    // the static 0:00 / video-duration display.
     if (y < H - 5) {
         static const char* bars[] = {"▁","▂","▃","▄","▅","▆","▇","█"};
         static const int pat[] = {2,3,5,4,6,7,5,4,6,3,2,3,5,7,6,4,3,2,4,6,5,3,2,4,5,3,2,1};
         int wf = W - 6; if (wf < 4) wf = W - 2;
         int wx = (W - wf) / 2; if (wx < 1) wx = 1;
-        attron(COLOR_PAIR(Color::ACCENT));
-        for (int i = 0; i < wf; i++)
-            mvprintw(y, wx + i, "%s", uni ? bars[pat[i % (int)(sizeof(pat)/sizeof(int))]] : "-");
-        attroff(COLOR_PAIR(Color::ACCENT));
+
+        bool live_prog = state.playback_dur > 0.5;
+        double frac = live_prog ? (state.playback_pos / state.playback_dur) : 0.0;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
+        int filled = (int)(frac * wf);
+
+        for (int i = 0; i < wf; i++) {
+            int pidx = pat[i % (int)(sizeof(pat)/sizeof(int))];
+            // Elapsed portion is bright accent; upcoming portion is dim.
+            if (live_prog && i >= filled) attron(COLOR_PAIR(Color::STATS) | A_DIM);
+            else                          attron(COLOR_PAIR(Color::ACCENT));
+            mvprintw(y, wx + i, "%s", uni ? bars[pidx] : (i < filled ? "=" : "-"));
+            if (live_prog && i >= filled) attroff(COLOR_PAIR(Color::STATS) | A_DIM);
+            else                          attroff(COLOR_PAIR(Color::ACCENT));
+        }
+
         attron(COLOR_PAIR(Color::STATS) | A_DIM);
-        mvprintw(y + 1, wx, "0:00");
-        std::string dur = v.is_live ? "LIVE"
-                        : (v.duration.empty() || v.duration == "0:00") ? "--:--" : v.duration;
+        std::string elapsed = live_prog ? fmt_time(state.playback_pos) : "0:00";
+        mvprintw(y + 1, wx, "%s", elapsed.c_str());
+        std::string dur = live_prog ? fmt_time(state.playback_dur)
+                        : (v.is_live ? "LIVE"
+                          : (v.duration.empty() || v.duration == "0:00") ? "--:--" : v.duration);
         mvprintw(y + 1, wx + wf - (int)dur.size(), "%s", dur.c_str());
         attroff(COLOR_PAIR(Color::STATS) | A_DIM);
         y += 3;
@@ -1674,7 +1958,7 @@ void TUI::stream_playing(const AppState& state) {
         center_text(y, W, std::string(prev) + "     " + mid + "     " + next,
                     COLOR_PAIR(Color::ACCENT) | A_BOLD);
     }
-    center_text(H - 1, W, "space pause · b back · q quit", COLOR_PAIR(Color::BG) | A_DIM);
+    center_text(H - 1, W, "space·+/-·</>·Ctrl-S·b·q", COLOR_PAIR(Color::BG) | A_DIM);
 }
 
 } // namespace ytui
