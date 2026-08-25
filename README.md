@@ -1,6 +1,6 @@
 # ytcui (=^･ω･^=)
 
-> Updates to the project are a bit slow, and I know there are some nasty bugs, I will get to those soon! ytcui and ytcui-dl are both getting MASSIVE upgrades to quality soon!
+> Updates to the project are a bit slow, and I know there are some nasty bugs, I will get to those soon! ytcui and ytcui-dl are both getting MASSIVE upgrades to quality soon! (Updated ytcui-dl, working on OISv5. ytcui bug fixes coming real soon!)
 
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
