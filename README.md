@@ -2,6 +2,8 @@
 
 > UPDATED TO ytcui-dl v2!! Higher quality audio and video! Better macOS input handling!
 
+> Check out - [ytcui-termux](https://github.com/MilkmanAbi/ytcui-termux) if you waant basically free youtube music for your phone (sleep timer included!) 
+
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
 Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in, experimental YouTube client) or the mature **yt-dlp**.
@@ -368,6 +370,17 @@ MIT
 *ytcui values simplicity over flashiness, portability over lock-in, and clean code over clever abstractions. It's a practical terminal client that aims to stay small, readable, and reliable — something you can actually open the source of and understand.*
 
 *Made with (=^･ω･^=) and ncurses*
+
+---
+
+## Connected Project Repositories
+
+- [ytcui](https://github.com/MilkmanAbi/ytcui)
+- [ytcui-dl](https://github.com/MilkmanAbi/ytcui-dl)
+- [ytcui-termux](https://github.com/MilkmanAbi/ytcui-termux)
+- [ytcui-dotmatrix](https://github.com/MilkmanAbi/ytcui-dotmatrix)
+
+> These are some of the ytcui* stuff. ytcui-dl is the library driving it all. ytcui-termux is for android, runs on termux!
 
 ---
 
