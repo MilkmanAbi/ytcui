@@ -545,6 +545,12 @@ int App::run() {
             player_.seek_backward(10.0);
             state_.status_message = "<< -10s";
         }
+        else if (state_.status_message == "__SEEK_TO__") {
+            player_.seek_to(state_.seek_to_secs);
+            int t = (int)state_.seek_to_secs;
+            char sbuf[32]; snprintf(sbuf, sizeof(sbuf), ">> %d:%02d", t / 60, t % 60);
+            state_.status_message = sbuf;
+        }
 
         // ── Streamlined-mode section loaders & playback ───────────────────────
         if (state_.status_message == "__STREAM_SEC_LIBRARY__" ||
@@ -874,12 +880,16 @@ void App::do_save(int choice) {
     if (!library_.is_bookmarked(v.id))
         library_.toggle_bookmark(v.id, v.title, v.channel, v.channel_id);
 
-    std::string url = "https://www.youtube.com/watch?v=" + v.id;
-
     if (choice == 0) {
         state_.status_message = "Bookmarked! (*^_^*)";
     } else if (choice == 1) {
-        std::string dir = std::string(getenv("HOME")) + "/Videos/ytcui";
+        // Download: both an MP4 (video+audio) and an MP3 land in the user's
+        // actual Downloads folder. The heavy lifting happens in a re-exec'd
+        // copy of ourselves (see main.cpp's --internal-download and the
+        // comment there for why this is exec, not an in-process call or a
+        // plain fork).
+        std::string dir = std::string(getenv("HOME")) + "/Downloads";
+        std::string exe = compat::self_exe_path(nullptr);
         pid_t pid = fork();
         if (pid == 0) {
             setsid();
@@ -892,48 +902,17 @@ void App::do_save(int choice) {
             }
             std::string mc = "mkdir -p '" + dir + "'";
             int r = system(mc.c_str()); (void)r;
-            std::string output_tmpl = dir + "/%(title)s.%(ext)s";
-            if (cookies.empty()) {
-                execlp("yt-dlp", "yt-dlp", "-o", output_tmpl.c_str(), url.c_str(), nullptr);
-            } else {
-                std::string flag, browser;
-                std::istringstream iss(cookies);
-                iss >> flag >> browser;
-                execlp("yt-dlp", "yt-dlp", flag.c_str(), browser.c_str(),
-                       "-o", output_tmpl.c_str(), url.c_str(), nullptr);
+            const char* self = !exe.empty() ? exe.c_str() : "ytcui";
+            if (!exe.empty()) {
+                execl(self, self, "--internal-download", v.id.c_str(), dir.c_str(),
+                      cookies.c_str(), nullptr);
             }
+            // Fall back to a $PATH lookup if we couldn't resolve our own path.
+            execlp("ytcui", "ytcui", "--internal-download", v.id.c_str(), dir.c_str(),
+                   cookies.c_str(), nullptr);
             _exit(127);
         }
-        state_.status_message = "Downloading video... (>w<)b";
-    } else if (choice == 2) {
-        std::string dir = std::string(getenv("HOME")) + "/Music/ytcui";
-        pid_t pid = fork();
-        if (pid == 0) {
-            setsid();
-            int devnull = open("/dev/null", O_RDWR);
-            if (devnull >= 0) {
-                dup2(devnull, STDIN_FILENO);
-                dup2(devnull, STDOUT_FILENO);
-                dup2(devnull, STDERR_FILENO);
-                close(devnull);
-            }
-            std::string mc = "mkdir -p '" + dir + "'";
-            int r = system(mc.c_str()); (void)r;
-            std::string output_tmpl = dir + "/%(title)s.%(ext)s";
-            if (cookies.empty()) {
-                execlp("yt-dlp", "yt-dlp", "-x", "--audio-format", "mp3",
-                       "-o", output_tmpl.c_str(), url.c_str(), nullptr);
-            } else {
-                std::string flag, browser;
-                std::istringstream iss(cookies);
-                iss >> flag >> browser;
-                execlp("yt-dlp", "yt-dlp", flag.c_str(), browser.c_str(),
-                       "-x", "--audio-format", "mp3",
-                       "-o", output_tmpl.c_str(), url.c_str(), nullptr);
-            }
-            _exit(127);
-        }
-        state_.status_message = "Downloading audio... (>w<)b";
+        state_.status_message = "Downloading MP4 + MP3 to ~/Downloads... (>w<)b";
     }
 }
 

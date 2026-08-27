@@ -40,6 +40,7 @@ public:
     // Seeking via IPC
     bool seek_forward(double secs = 10.0);
     bool seek_backward(double secs = 10.0);
+    bool seek_to(double secs);   // absolute, clamped to [0, duration]
 
     std::string now_playing() const;
 

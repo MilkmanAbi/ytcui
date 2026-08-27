@@ -322,9 +322,14 @@ make clean             # clean
 
 | Platform | Build deps | Runtime |
 |----------|-----------|---------|
-| Linux | `g++`, `make`, `libncursesw-dev`, `libcurl-dev`, `libssl-dev` | `mpv`, `chafa` |
-| macOS | Xcode CLT, Homebrew/MacPorts `ncurses`, `curl`, `openssl@3` | `mpv`, `chafa` |
-| FreeBSD | `clang++`, `gmake`, `ncurses`, `curl`, `openssl` | `mpv`, `chafa` |
+| Linux | `g++`, `make`, `libncursesw-dev`, `libssl-dev`, `zlib1g-dev` | `mpv`, `chafa`, `curl`, `ffmpeg` |
+| macOS | Xcode CLT, Homebrew/MacPorts `ncurses`, `openssl@3`, `zlib` | `mpv`, `chafa`, `curl`, `ffmpeg` |
+| FreeBSD | `clang++`, `gmake`, `ncurses`, `openssl`, `zlib` | `mpv`, `chafa`, `curl`, `ffmpeg` |
+
+ytcui-dl v2 does its own TLS/socket I/O, so `curl` is no longer a build
+dependency — it's an optional runtime tool (startup update-check, thumbnail
+fetching) on any backend. `ffmpeg` is optional too, needed only for the
+"Download (MP4 + MP3)" action.
 
 `nlohmann/json` is bundled — no separate install needed.
 

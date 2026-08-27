@@ -39,7 +39,8 @@ public:
     bool set_pause(bool state);
     bool set_volume(int vol);        // absolute, clamped 0-150
     bool adjust_volume(int delta);   // relative
-    bool seek(double seconds);       // relative
+    bool seek(double seconds);          // relative
+    bool seek_absolute(double target);  // absolute, exact (not keyframe-snapped)
     bool quit();
 
     // Cached properties (updated by pump() from mpv's observe events).

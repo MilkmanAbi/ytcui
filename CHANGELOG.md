@@ -2,6 +2,93 @@
 
 All notable changes to ytcui will be documented in this file.
 
+## [4.1.0] - 2026-08-27
+
+### Changed
+- **Upgraded the built-in backend to ytcui-dl v2** (ground-up rewrite). Drops
+  the libcurl dependency entirely (the new library does its own TLS/socket
+  I/O) in favour of OpenSSL + zlib — the Makefile, OIS dependency manifest,
+  and `--diag` dependency checks are updated accordingly; `curl` is now only
+  an optional runtime tool (startup update-check, thumbnail fetching), not a
+  build dependency. Search, stream resolution, and playback all move to the
+  new InnerTube client chain (VISIONOS/ANDROID_VR/ANDROID/IOS), which fixes
+  video quality being silently capped at 360p by the old "always force
+  muxed" workaround — adaptive video-only + audio-only streams are now
+  fetched and muxed live by mpv via `--audio-file`.
+- **Download now saves both an MP4 and an MP3 to `~/Downloads`**, using
+  ytcui-dl v2's native downloader (parallel ranged-chunk fetch + ffmpeg mux/
+  transcode) instead of shelling out to `yt-dlp`. Replaces the old two
+  separate "Download video" (`~/Videos/ytcui`) / "Download audio" (mp3, to
+  `~/Music/ytcui`) options with a single "Download (MP4 + MP3)" action. Runs
+  in a re-exec'd headless copy of `ytcui` (`--internal-download`, undocumented
+  on purpose) rather than a plain fork or an in-process call — ytcui-dl runs
+  a background worker thread and holds live TLS state, and fork()ing a
+  multi-threaded process to then do fresh network I/O in the child is the
+  same class of hazard behind the 3.1.1 macOS "malloc: pointer being freed"
+  crash. `ffmpeg` is now an optional dependency (needed only for this).
+
+### Fixed
+- **Chafa thumbnails were being re-rendered on every single frame** (~30
+  times a second while idling on input), each one a fresh `chafa` subprocess
+  fork + ANSI parse for an image that never changed. This was the real cause
+  of several reported symptoms at once: general input lag, keypresses
+  needing a second press to "take," and stuttery/janky feel especially
+  noticeable on macOS. Render output (block-art and raster/sixel-kitty-iterm
+  alike) is now cached per (video, size[, mode]) — chafa now runs once per
+  thumbnail, not once per frame.
+- **Startup/search-box garbage text, and occasional crashes shortly after
+  launch.** The pre-ncurses terminal-capability handshake (device-attribute
+  queries used to detect sixel/kitty/cell-size support) could leave a
+  straggling reply unread in the tty's input queue if it arrived after the
+  probe's own read loop gave up; ncurses' `initscr()`/`getch()` would then
+  deliver those bytes moments later as if the user had typed them —
+  landing as stray escape-sequence characters in the search box, or
+  corrupting whatever had focus. The probe now drains and discards any
+  unread bytes before restoring cooked mode, and `TUI::init()` calls
+  `flushinp()` as a safety net for the small window in between.
+- **"Insane" screen corruption once a sixel/kitty/iTerm graphics mode was
+  enabled.** Raster thumbnails are written directly to the tty with raw
+  cursor-positioning escapes (they can't go through ncurses, which owns the
+  cell grid). Doing that without telling ncurses silently desynced its
+  internal cursor model from the real terminal cursor, so every subsequent
+  frame's redraw — computed as a *relative* move from what ncurses still
+  believed was current — landed in the wrong cells, compounding worse each
+  frame. Block-art thumbnails (the default) never touched the raw tty, so
+  this only ever showed up with raster modes explicitly enabled. Fixed by
+  saving/restoring the cursor (DECSC/DECRC) around the raw writes.
+- **A single click on a result (or a playlist video) required a second click
+  to actually do anything** — the first click only *selected* the row, and
+  only a second click on the now-selected row opened its action menu, unlike
+  Enter which always did both in one step. A click now selects and opens
+  actions together, matching keyboard behaviour.
+- **The search box's UTF-8 continuation-byte reader could misfire on
+  special keys.** Any ncurses symbolic key code (arrows, Home/End, Page Up/
+  Down, function keys, kitty-protocol keys, ...) whose value happened to
+  collide with the 0xC0–0xFF lead-byte pattern once truncated to a byte
+  could be swallowed as if it were the start of a multibyte character —
+  then the *next* real keystroke(s) got hunted for continuation bytes that
+  were never coming, sometimes landing garbage in the query. Also fixed: a
+  successful non-ASCII keypress permanently dropped the app's input-poll
+  rate from 33ms to 100ms for the rest of the session (a leftover hardcoded
+  value that should have restored the real one).
+- **Seek forward/backward (`<`/`>`) hardened.** Switched from relative to
+  absolute+exact seeking, computed from mpv's own last-known position and
+  clamped to `[0, duration]`. A relative seek fired again before mpv
+  finishes the previous one (a real risk on a network stream, where seeking
+  means re-requesting a byte range from the CDN) can't drift or compound the
+  way two "relative" commands can; each press now recomputes its target from
+  truth instead.
+- Streamlined (narrow-terminal) mode's now-playing waveform is now
+  click-to-seek: clicking a point on the bar seeks to that position in the
+  track, matching what the seek keys already did.
+- macOS: the OIS lifecycle-flag hook resolution (`ytcui --update`,
+  `--uninstall`, etc.) used to resolve the running binary's own path via
+  `/proc/self/exe`, which doesn't exist on macOS/BSD — a `ytcui --update`
+  invoked via `$PATH` (not an explicit relative/absolute path) could fail to
+  find the OIS hook next to the binary. Added a real cross-platform
+  self-path lookup (`_NSGetExecutablePath` on macOS) in `compat.h`, shared
+  with the new download re-exec path.
+
 ## [4.0.0] - 2026-07-27
 
 ### Added

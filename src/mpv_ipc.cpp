@@ -178,6 +178,13 @@ bool MpvIPC::seek(double seconds) {
     return send_raw(cmd);
 }
 
+bool MpvIPC::seek_absolute(double target) {
+    if (target < 0) target = 0;
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), R"({"command":["seek",%.2f,"absolute+exact"]})", target);
+    return send_raw(cmd);
+}
+
 bool MpvIPC::quit() { return send_raw(R"({"command":["quit"]})"); }
 
 } // namespace ytui

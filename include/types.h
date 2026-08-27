@@ -96,6 +96,11 @@ struct AppState {
     double playback_dur  = 0.0;   // total duration in seconds
     int    playback_vol  = 80;    // current volume %
 
+    // Set by a waveform click in streamlined mode (see input.cpp's
+    // stream_handle); app.cpp reads this once on the "__SEEK_TO__" status
+    // message and issues the actual mpv seek.
+    double seek_to_secs = 0.0;
+
     bool thumbs_available = false;
     // Resolved thumbnail graphics protocol (cast of Thumbnails::Gfx). Set once
     // by App at startup. 0=None,1=Blocks,2=Sixel,3=Kitty,4=Iterm. Defaults to

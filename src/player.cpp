@@ -116,14 +116,44 @@ void Player::tick() {
     ipc_.pump();                                 // drain events, refresh cache
 }
 
+// Seeks go through an absolute, position-aware target rather than a bare
+// "relative" command. Two reasons: (1) it's deterministic — a relative seek
+// fired again before mpv has finished the previous one (a real risk on a
+// network stream, where a seek means re-requesting a byte range from the
+// CDN and can take noticeably longer than a local file) can't drift or
+// compound, since each press recomputes the target from mpv's own
+// last-known position; (2) it lets us clamp to [0, duration] here instead of
+// however mpv's own "relative" clamping happens to behave at the ends of
+// the stream. Falls back to a relative nudge only if we don't have a cached
+// position yet (e.g. right after playback starts, before mpv's first
+// observe_property push has arrived).
 bool Player::seek_forward(double secs) {
-    if (ipc_.connected()) return ipc_.seek(secs);
-    return false;
+    if (!ipc_.connected()) return false;
+    double pos = ipc_.position();
+    if (pos < 0) return ipc_.seek(secs);
+    double dur = ipc_.duration();
+    double target = pos + secs;
+    if (dur > 0 && target > dur) target = dur;
+    return ipc_.seek_absolute(target);
 }
 
 bool Player::seek_backward(double secs) {
-    if (ipc_.connected()) return ipc_.seek(-secs);
-    return false;
+    if (!ipc_.connected()) return false;
+    double pos = ipc_.position();
+    if (pos < 0) return ipc_.seek(-secs);
+    return ipc_.seek_absolute(pos - secs);
+}
+
+// Used by the streamlined-mode waveform click-to-seek: secs is already an
+// absolute target (computed from the click's fraction across the bar), just
+// clamp to the known duration.
+bool Player::seek_to(double secs) {
+    if (!ipc_.connected()) return false;
+    double dur = ipc_.duration();
+    double target = secs;
+    if (target < 0) target = 0;
+    if (dur > 0 && target > dur) target = dur;
+    return ipc_.seek_absolute(target);
 }
 
 bool Player::is_playing() const {
@@ -242,22 +272,30 @@ static bool spawn_mpv(const std::vector<std::string>& args, pid_t& out_pid, bool
 struct StreamURLs {
     std::string video_url;   // muxed (video+audio) or video-only stream URL
     std::string audio_url;   // only set when video_url is video-only adaptive
+    std::string user_agent;  // client UA that signed video_url/audio_url (ytcui-dl backend)
     bool ok = false;
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // ytcui-dl resolve_stream_urls
 //
-// ytcui-dl ALWAYS fetches the full muxed stream (video + audio in one URL).
-// This is deliberate — audio-only DASH streams get 403'd by YouTube CDN for
-// non-browser clients. Muxed progressive streams work 100% of the time.
+// v2 flips this from v1: select_best_video_stream() now prefers the best
+// ADAPTIVE video-only track (up to 1080p+), falling back to a muxed
+// progressive stream (capped around 360p) only if no adaptive video exists.
+// The old "always force muxed" behavior was working around a misdiagnosis —
+// v1's client returned SABR responses whose adaptive formats carry no URL at
+// all, which looked like "adaptive gets 403'd" but wasn't; v2's client chain
+// (VISIONOS/ANDROID_VR/ANDROID/IOS) gets real, fetchable adaptive URLs, so
+// forcing muxed was silently capping every video's quality at 360p.
 //
-// Audio mode: pass muxed URL to mpv with --no-video → audio-only playback.
-// Video mode: pass muxed URL to mpv normally → full video+audio playback.
+// Video mode: adaptive video-only URL to mpv, muxed audio (or a separate
+// adaptive audio track) supplied via --audio-file when video_url has no
+// audio of its own.
+// Audio mode: play_piped() resolves audio independently (see below) — it
+// does not call this function.
 //
-// select_best_video_stream() prefers muxed first, then falls back to
-// video-only adaptive only if no muxed stream exists (very rare).
-// In the fallback case we also supply a muxed URL as --audio-file.
+// is_muxed() tells us whether video_url already carries audio; if not, we
+// fetch a separate audio_url and mpv muxes them live via --audio-file.
 // ═════════════════════════════════════════════════════════════════════════════
 
 #ifdef USE_YTCUIDL
@@ -289,6 +327,14 @@ static StreamURLs resolve_stream_urls(const std::string& youtube_url) {
         }
 
         result.video_url = video_url;
+
+        // A format URL is signed for the specific InnerTube client that
+        // returned it (VISIONOS / ANDROID_VR / ANDROID / IOS — v2 tries them
+        // in a chain and the winner varies per video), so mpv must present
+        // that exact client's User-Agent when it fetches the URL or the CDN
+        // 403s it. There is no single hardcoded UA that works for every
+        // video any more (the old ytfast::ANDROID_UA constant is gone).
+        result.user_agent = info.client_ua ? info.client_ua : "";
 
         // If mpv got a video-only adaptive URL (rare fallback), also provide
         // a muxed stream as the audio source. mpv's --audio-file plays the
@@ -373,14 +419,27 @@ void Player::play_piped(const std::string& url, const std::string& title, PlayMo
 #ifdef USE_YTCUIDL
 
     std::string video_id = extract_video_id(url);
-    std::string stream_url;
+    std::string stream_url, user_agent;
 
     try {
-        // yt_best_audio() → select_best_audio_stream() → picks the best MUXED
-        // stream and returns its stream_url (raw, no &range= param).
-        // Never picks audio-only DASH — those 403 on non-browser clients.
-        stream_url = ytfast::yt_best_audio(video_id);
-        Log::write("[ytcui-dl] play_piped: resolved muxed stream (len=%zu)", stream_url.size());
+        // get_stream_formats() uses the same URL cache as resolve_stream_urls()
+        // (a hashmap lookup if search/prefetch already warmed it). We need the
+        // full VideoInfo, not just yt_best_audio()'s bare URL, because the
+        // format URL is signed for one specific InnerTube client and mpv must
+        // present that exact client's User-Agent (info.client_ua) or the CDN
+        // 403s it — there is no single hardcoded UA that works for every video.
+        //
+        // select_best_audio_stream() now prefers the best adaptive audio-only
+        // track (higher quality than the old muxed-only fallback): v2's
+        // client chain (VISIONOS/ANDROID_VR/ANDROID/IOS) returns real,
+        // fetchable adaptive URLs — the old "adaptive audio 403s" belief was a
+        // misdiagnosis of SABR responses carrying no URL at all, not of
+        // adaptive audio being blocked. It still falls back to muxed
+        // automatically if no adaptive audio track exists for this video.
+        auto info = ytfast::InnertubeClient::get_instance().get_stream_formats(video_id);
+        stream_url = ytfast::InnertubeClient::select_best_audio_stream(info.formats);
+        user_agent = info.client_ua ? info.client_ua : "";
+        Log::write("[ytcui-dl] play_piped: resolved audio stream (len=%zu)", stream_url.size());
     } catch (const std::exception& e) {
         Log::write("[ytcui-dl] play_piped: resolve failed: %s", e.what());
         return;
@@ -394,14 +453,14 @@ void Player::play_piped(const std::string& url, const std::string& title, PlayMo
     // mpv args for audio-only playback from a muxed (video+audio) stream URL.
     // --no-video:    discard video track, play only audio
     // --ytdl=no:     we provide a direct CDN URL, don't let mpv call yt-dlp
-    // --user-agent:  Android UA required — YouTube CDN validates it for muxed
+    // --user-agent:  the exact client UA that signed this URL (see above)
     std::vector<std::string> args = {
         "mpv",
         "--no-video",
         "--no-terminal",
         vol,
         "--ytdl=no",
-        std::string("--user-agent=") + ytfast::ANDROID_UA,
+        std::string("--user-agent=") + user_agent,
     };
 
     if (!opts_.no_cache) {
@@ -475,10 +534,10 @@ void Player::play_piped(const std::string& url, const std::string& title, PlayMo
 // ─── play_direct: video mode ──────────────────────────────────────────────────
 //
 // ytcui-dl path:
-//   resolve_stream_urls() returns a muxed URL. mpv receives it directly with
-//   --ytdl=no and the Android UA. The muxed stream has both video and audio —
-//   no --audio-file needed in the common case. Only adds --audio-file if
-//   resolve() fell back to video-only adaptive (very rare).
+//   resolve_stream_urls() returns the best adaptive video URL (or a muxed
+//   fallback). mpv receives it directly with --ytdl=no and the exact client
+//   UA that signed it. --audio-file supplies a separate audio track unless
+//   the video URL is already muxed.
 //
 // yt-dlp path:
 //   yt-dlp resolves bestvideo+bestaudio, gives us two URLs. Falls back to
@@ -515,8 +574,11 @@ void Player::play_direct(const std::string& url, const std::string& title) {
             args.push_back("--hwdec=no");
         }
 #ifdef USE_YTCUIDL
-        // Android UA required for CDN access on both muxed and adaptive streams
-        args.push_back(std::string("--user-agent=") + ytfast::ANDROID_UA);
+        // The exact client UA that signed streams.video_url/audio_url (see
+        // resolve_stream_urls()) — required for CDN access on both muxed and
+        // adaptive streams, and no longer a single constant across all videos.
+        if (!streams.user_agent.empty())
+            args.push_back("--user-agent=" + streams.user_agent);
 #endif
         args.push_back(streams.video_url);
         // audio_url only set when video_url is video-only adaptive (rare fallback)

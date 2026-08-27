@@ -157,6 +157,10 @@ static void run_diag(const Ansi& C) {
         { "mpv",      "which mpv",           true  },
         { "curl",     "which curl",          false },
         { "chafa",    "which chafa",         false },
+        // Needed by the "Download" action (StreamDownloader in ytcui-dl v2):
+        // it muxes separate video+audio streams into an MP4 and transcodes
+        // audio to MP3. Playback/search work fine without it.
+        { "ffmpeg",   "which ffmpeg",        false },
 #if defined(YTUI_MACOS)
         { "pbcopy",   "which pbcopy",        true  },
         { "open",     "which open",          true  },
@@ -595,11 +599,15 @@ int main(int argc, char* argv[]) {
             strcmp(a, "--upgrade") == 0 || strcmp(a, "--uninstall") == 0 ||
             strcmp(a, "--reinstall") == 0 || strcmp(a, "--install-info") == 0) {
 
-            // Resolve the directory the running binary lives in.
-            char exedir[4096] = {0};
-            ssize_t n = readlink("/proc/self/exe", exedir, sizeof(exedir) - 1);
+            // Resolve the directory the running binary lives in. (was
+            // readlink("/proc/self/exe", ...) unconditionally, which doesn't
+            // exist on macOS/BSD — the argv[0] fallback below only helps when
+            // ytcui was invoked with an explicit path, so a PATH-resolved
+            // `ytcui --update` on macOS could silently fail to find the OIS
+            // hook next to the binary.)
+            std::string exe = ytui::compat::self_exe_path(argv[0]);
             std::string dir;
-            if (n > 0) { exedir[n] = 0; std::string p(exedir); dir = p.substr(0, p.find_last_of('/')); }
+            if (!exe.empty()) dir = exe.substr(0, exe.find_last_of('/'));
             else if (strchr(argv[0], '/')) { std::string p(argv[0]); dir = p.substr(0, p.find_last_of('/')); }
 
             // Candidate hook locations: next to the binary, then standard installs.
@@ -626,6 +634,28 @@ int main(int argc, char* argv[]) {
                 "Install/manage ytcui with OIS by running:  sh install.sh\n", a);
             return 1;
         }
+    }
+
+    // ── --internal-download: headless download worker ──────────────────────
+    // Not a user-facing flag (deliberately undocumented / absent from
+    // --help): the running TUI's "Download" action forks a child and execs
+    // *this same binary* with this flag instead of calling the download
+    // logic in-process. That's deliberate, not an oversight — ytcui-dl runs
+    // a background prefetch worker thread and holds live libssl/TLS state in
+    // the already-running process, and fork()ing a multi-threaded process to
+    // then do fresh network I/O in the child is exactly the class of
+    // locking/TLS hazard that produced the macOS "malloc: pointer being
+    // freed" abort fixed in 3.1.1. Exec instead of fork+call gets a clean,
+    // single-threaded process for the download, no different from how the
+    // OIS flags above already re-launch via exec.
+    // Usage: ytcui --internal-download <video_id> <out_dir> [cookie_args]
+    if (argc >= 4 && strcmp(argv[1], "--internal-download") == 0) {
+        std::string video_id = argv[2];
+        std::string out_dir  = argv[3];
+        std::string cookies  = argc >= 5 ? argv[4] : "";
+        auto res = ytui::YouTube::download_both(video_id, out_dir, cookies);
+        ytui::YouTube::shutdown();
+        return res.ok ? 0 : 1;
     }
 
     // ── Pre-scan for --no-update-check ────────────────────────────────────

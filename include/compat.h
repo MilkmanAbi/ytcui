@@ -30,6 +30,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 // ─── Platform detection ────────────────────────────────────────────────────────
 
@@ -44,6 +45,7 @@
     #include <sys/sysctl.h>
     // sys/event.h kept for completeness but EVFILT_PROC is NOT used (see above)
     #include <sys/event.h>
+    #include <mach-o/dyld.h>
 #elif defined(__NetBSD__) || defined(__OpenBSD__)
     #define YTUI_BSD_GENERIC 1
 #endif
@@ -140,6 +142,28 @@ inline void fork_death_watchdog(int death_pipe_read_fd, pid_t ytcui_pid) {
     }
     if (death_pipe_read_fd >= 0) close(death_pipe_read_fd);
     (void)watchdog_pid;
+}
+
+// ─── Resolve the running executable's own path ─────────────────────────────
+// Needed to re-exec ourselves (e.g. a background worker mode invoked from a
+// forked child, or the OIS lifecycle-flag hook below) without depending on
+// $PATH containing us. /proc/self/exe doesn't exist on macOS/BSD, so each
+// platform gets its own real lookup; argv0 is only a last-resort fallback,
+// and only useful when it already contains a '/' (an explicit relative or
+// absolute invocation — a bare "ytcui" from $PATH resolution can't be turned
+// back into a path here, the caller has to fall further back to PATH search).
+inline std::string self_exe_path(const char* argv0 = nullptr) {
+#if defined(YTUI_MACOS)
+    char buf[4096];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) return std::string(buf);
+#elif defined(YTUI_LINUX) || defined(YTUI_FREEBSD)
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) { buf[n] = '\0'; return std::string(buf); }
+#endif
+    if (argv0 && strchr(argv0, '/')) return std::string(argv0);
+    return std::string();
 }
 
 // ─── Debug: dump platform info ────────────────────────────────────────────────

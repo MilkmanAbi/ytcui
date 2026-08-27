@@ -119,11 +119,15 @@ BACKEND ?= ytcuidl
 
 ifeq ($(BACKEND),ytcuidl)
     CXXFLAGS += -DUSE_YTCUIDL
-    # ytcui-dl requires libcurl, openssl. We need the CFLAGS too, not just LIBS:
-    # on multiarch distros curl/curl.h lives under e.g. /usr/include/<triplet>
-    # and is not on the default search path, so omitting cflags breaks the build.
-    YTCUIDL_CFLAGS := $(shell pkg-config --cflags libcurl openssl 2>/dev/null)
-    YTCUIDL_LIBS   := $(shell pkg-config --libs libcurl openssl 2>/dev/null || echo "-lcurl -lssl -lcrypto")
+    # ytcui-dl v2 dropped libcurl entirely — it does its own TLS/socket I/O
+    # (see ytcui-dl/include/yt_http.h) — so the build needs OpenSSL + zlib
+    # instead of libcurl. We still need the CFLAGS, not just LIBS: on
+    # multiarch distros the headers live under e.g. /usr/include/<triplet>
+    # and aren't on the default search path, and on macOS OpenSSL is
+    # keg-only (covered by the PKG_CONFIG_PATH priming above, which already
+    # includes openssl@3's .pc directory).
+    YTCUIDL_CFLAGS := $(shell pkg-config --cflags openssl zlib 2>/dev/null)
+    YTCUIDL_LIBS   := $(shell pkg-config --libs openssl zlib 2>/dev/null || echo "-lssl -lcrypto -lz")
     CXXFLAGS += $(YTCUIDL_CFLAGS)
 else
     YTCUIDL_LIBS :=

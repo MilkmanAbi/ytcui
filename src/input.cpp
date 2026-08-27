@@ -85,6 +85,36 @@ static bool stream_handle(int ch, AppState& state) {
             return false;
 
         case StreamScreen::Playing:
+            if (ch == KEY_MOUSE) {
+                MEVENT ev;
+                if (getmouse(&ev) != OK) return false;
+                if (!(ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED))) return false;
+                if (state.playback_dur <= 0.5) return false;   // nothing to seek in yet
+
+                // Waveform row/x-range — MUST mirror TUI::stream_playing()'s
+                // layout math exactly, or a click lands on the wrong point of
+                // the bar. Same convention already used for the normal-mode
+                // tab bar / results list hit-testing below.
+                int W = state.term_w, H = state.term_h;
+                int wf_y = 1;
+                if (state.thumbs_available && !state.stream_now.id.empty() && H > 13) {
+                    int art_w = std::min(W - 4, (H - 10) * 2); if (art_w < 6) art_w = W - 4;
+                    int art_rows = std::max(3, art_w / 2); if (art_rows > H - 10) art_rows = H - 10;
+                    wf_y += art_rows + 1;
+                } else {
+                    wf_y = 2;
+                }
+                int wf = W - 6; if (wf < 4) wf = W - 2;
+                int wx = (W - wf) / 2; if (wx < 1) wx = 1;
+
+                if (ev.y == wf_y && ev.x >= wx && ev.x < wx + wf) {
+                    double frac = wf > 1 ? double(ev.x - wx) / double(wf - 1) : 0.0;
+                    frac = std::clamp(frac, 0.0, 1.0);
+                    state.seek_to_secs = frac * state.playback_dur;
+                    state.status_message = "__SEEK_TO__";
+                }
+                return false;
+            }
             if (ch == ' ') state.status_message = "__PAUSE_TOGGLE__";
             else if (ch == '+') state.status_message = "__VOLUME_UP__";
             else if (ch == '-') state.status_message = "__VOLUME_DOWN__";
@@ -208,15 +238,16 @@ bool InputHandler::handle(int ch, AppState& state) {
             if (mx < lw) {
                 int vid_idx = (my - start_y - 2) + state.playlist_video_scroll;
                 if (vid_idx >= 0) {
-                    if (state.playlist_video_idx == vid_idx && state.focus == Panel::PlaylistView) {
-                        state.focus = Panel::PlaylistActions;
-                        state.actions_visible = true;
-                        state.selected_action = 0;
-                    } else {
-                        state.playlist_video_idx = vid_idx;
-                        state.focus = Panel::PlaylistView;
-                        state.actions_visible = false;
-                    }
+                    // A click both selects the row AND opens its actions in
+                    // one step (matching what Enter does on an already-
+                    // selected row) — requiring a second click on the same
+                    // row to "confirm" a selection the mouse just made is
+                    // exactly the double-click-required feel reported as a
+                    // bug; a single click choosing an item should act on it.
+                    state.playlist_video_idx = vid_idx;
+                    state.focus = Panel::PlaylistActions;
+                    state.actions_visible = true;
+                    state.selected_action = 0;
                 }
             } else {
                 state.focus = Panel::PlaylistActions;
@@ -277,14 +308,17 @@ bool InputHandler::handle(int ch, AppState& state) {
             if (mx < lw && !state.results.empty()) {
                 int result_idx = (my - start_y - 1) + state.results_scroll;
                 if (result_idx >= 0 && result_idx < (int)state.results.size()) {
-                    if (state.selected_result == result_idx) {
-                        state.actions_visible = true;
-                        state.focus = Panel::Actions;
-                        state.selected_action = 0;
-                    } else {
-                        state.selected_result = result_idx;
-                        clamp_scroll(state);
-                    }
+                    // Select and open actions in a single click — previously
+                    // a click on an unselected row only selected it, and a
+                    // second click on that now-selected row was needed to
+                    // open its actions. That "click twice for it to
+                    // register" requirement is exactly what mouse users
+                    // reported as broken; keyboard (Enter) never needed it.
+                    state.selected_result = result_idx;
+                    clamp_scroll(state);
+                    state.actions_visible = true;
+                    state.focus = Panel::Actions;
+                    state.selected_action = 0;
                 }
             }
         }
@@ -439,21 +473,47 @@ bool InputHandler::handle_search_input(int ch, AppState& state) {
         default:
             if (ch >= 32 && ch < 127) {
                 state.search_query += (char)ch;
-            } else if (ch >= 128) {
+            } else if (ch >= 128 && ch <= 255) {
+                // A raw UTF-8 lead byte from getch()'s byte-at-a-time delivery.
+                // Anything >= 256 is an ncurses symbolic KEY_* code (arrows,
+                // function keys, Home/End/PageUp/Down, kitty-protocol keys,
+                // ...), never a byte of input text — some of those numeric
+                // values happen to collide with the 0xC0-0xFF lead-byte
+                // pattern once truncated to a byte, which used to make this
+                // branch "swallow" an unrelated special key as if it were the
+                // start of a multibyte character (then, worse, consume the
+                // *next* real keystroke(s) hunting for continuation bytes
+                // that were never coming). Bounding this to 128..255 is what
+                // the old `ch >= 128` check should have done from the start.
                 unsigned char lead = (unsigned char)ch;
                 int need = 0;
                 if      ((lead & 0xE0) == 0xC0) need = 1;
                 else if ((lead & 0xF0) == 0xE0) need = 2;
                 else if ((lead & 0xF8) == 0xF0) need = 3;
                 else return false;
+                size_t mark = state.search_query.size();
                 state.search_query += (char)ch;
                 timeout(50);
                 for (int i = 0; i < need; i++) {
                     int b = getch();
-                    if (b == ERR || (b & 0xC0) != 0x80) { state.search_query.pop_back(); break; }
+                    if (b == ERR || b > 255 || (b & 0xC0) != 0x80) {
+                        // Not a continuation byte — it's the next real event
+                        // (keystroke, click, resize...). Push it back instead
+                        // of swallowing it, and drop the WHOLE partial
+                        // sequence built so far (not just the last byte) so a
+                        // truncated multibyte char can't linger in the query
+                        // and corrupt every glyph rendered after it.
+                        if (b != ERR) ungetch(b);
+                        state.search_query.resize(mark);
+                        break;
+                    }
                     state.search_query += (char)b;
                 }
-                timeout(100);
+                // Restore the app's normal 33ms poll rate (set once in
+                // TUI::init()) — this used to hardcode 100ms, permanently
+                // slowing input responsiveness for the rest of the session
+                // after the very first non-ASCII character was typed.
+                timeout(33);
             }
             return false;
     }
@@ -614,7 +674,7 @@ void InputHandler::handle_sort_menu(int ch, AppState& state) {
 
 void InputHandler::handle_save_prompt(int ch, AppState& state) {
     switch (ch) {
-        case 'j': case KEY_DOWN: if (state.save_prompt_idx < 2) state.save_prompt_idx++; break;
+        case 'j': case KEY_DOWN: if (state.save_prompt_idx < 1) state.save_prompt_idx++; break;
         case 'k': case KEY_UP:   if (state.save_prompt_idx > 0) state.save_prompt_idx--; break;
         case '\n': case KEY_ENTER: state.status_message = "__SAVE_PICKED__"; break;
         case 27: state.focus = Panel::Actions; break;

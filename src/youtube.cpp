@@ -144,6 +144,65 @@ std::optional<Video> YouTube::get_video_info(const std::string& video_id) {
 std::string YouTube::exec_ytdlp(const std::vector<std::string>&) { return ""; }
 Video       YouTube::parse_video_json(const std::string&) { return {}; }
 
+DownloadOutcome YouTube::download_both(const std::string& video_id,
+                                        const std::string& out_dir,
+                                        const std::string& /* cookie_args */) {
+    DownloadOutcome res;
+    try {
+        auto info = ytfast::yt_get_formats(video_id);
+        if (info.formats.empty()) { res.error = "no formats available"; return res; }
+
+        const auto* vf = ytfast::InnertubeClient::pick_video(info.formats, 1080);
+        const auto* af = ytfast::InnertubeClient::pick_audio(info.formats);
+        if (!vf && !af) { res.error = "no playable formats"; return res; }
+
+        std::string ua = info.client_ua ? info.client_ua : "";
+
+        // Filename base from suggest_filename(), extension swapped to the
+        // one we actually want (the source format's own container/codec is
+        // irrelevant — StreamDownloader always produces MP4/MP3 output).
+        std::string named = ytfast::Downloader::suggest_filename(info, vf ? *vf : *af);
+        size_t dot = named.rfind('.');
+        std::string stem = (dot == std::string::npos) ? named : named.substr(0, dot);
+        std::string mp4_path = out_dir + "/" + stem + ".mp4";
+        std::string mp3_path = out_dir + "/" + stem + ".mp3";
+
+        std::string video_url = vf ? vf->url : "";
+        // A video-only pick has no sound; if there's no separate audio-only
+        // track either, fall back to the video URL itself only when it's
+        // muxed (carries its own audio).
+        std::string audio_url = af ? af->url : ((vf && vf->has_audio) ? vf->url : "");
+
+        Log::write("[ytcui-dl] download_both: video='%s' audio='%s' -> %s / %s",
+                   video_url.empty() ? "(none)" : "ok",
+                   audio_url.empty() ? "(none)" : "ok",
+                   mp4_path.c_str(), mp3_path.c_str());
+
+        auto rv = ytfast::StreamDownloader::fetch(video_url, audio_url, mp4_path, ua,
+                                                   /*audio_only=*/false, /*quiet=*/true);
+        if (rv.ok) res.mp4_path = mp4_path;
+        else Log::write("[ytcui-dl] mp4 download failed: %s", rv.error.c_str());
+
+        ytfast::StreamDlResult ra;
+        if (!audio_url.empty()) {
+            ra = ytfast::StreamDownloader::fetch("", audio_url, mp3_path, ua,
+                                                  /*audio_only=*/true, /*quiet=*/true);
+            if (ra.ok) res.mp3_path = mp3_path;
+            else Log::write("[ytcui-dl] mp3 download failed: %s", ra.error.c_str());
+        }
+
+        res.ok = rv.ok || ra.ok;
+        if (!res.ok) {
+            res.error = "video: " + (rv.error.empty() ? "failed" : rv.error) +
+                        "; audio: " + (ra.error.empty() ? "failed" : ra.error);
+        }
+    } catch (const std::exception& e) {
+        res.error = e.what();
+        Log::write("[ytcui-dl] download_both error: %s", e.what());
+    }
+    return res;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // BACKEND: yt-dlp
 // ═════════════════════════════════════════════════════════════════════════════
@@ -241,6 +300,34 @@ std::string YouTube::exec_ytdlp(const std::vector<std::string>& args) {
     while (fgets(buffer, sizeof(buffer), pipe)) result += buffer;
     pclose(pipe);
     return result;
+}
+
+DownloadOutcome YouTube::download_both(const std::string& video_id,
+                                        const std::string& out_dir,
+                                        const std::string& cookie_args) {
+    DownloadOutcome res;
+    std::string url = "https://www.youtube.com/watch?v=" + video_id;
+    // yt-dlp names the output file itself from the video's real title, which
+    // we don't know ahead of time here — the caller only needs to know
+    // whether it worked, not the exact resulting path.
+    std::string tmpl = out_dir + "/%(title)s [%(id)s].%(ext)s";
+
+    auto run = [&](const std::vector<std::string>& extra_args) -> bool {
+        std::string cmd = "yt-dlp";
+        if (!cookie_args.empty()) cmd += " " + cookie_args;
+        for (auto& a : extra_args) cmd += " '" + a + "'";
+        cmd += " -o '" + tmpl + "' '" + url + "' >/dev/null 2>&1";
+        Log::write("exec: %s", cmd.c_str());
+        return system(cmd.c_str()) == 0;
+    };
+
+    bool ok_mp4 = run({});
+    bool ok_mp3 = run({"-x", "--audio-format", "mp3"});
+    res.ok = ok_mp4 || ok_mp3;
+    if (!res.ok) res.error = "yt-dlp failed for both video and audio";
+    else if (!ok_mp4) res.error = "video download failed (audio/mp3 succeeded)";
+    else if (!ok_mp3) res.error = "audio/mp3 download failed (video succeeded)";
+    return res;
 }
 
 #endif  // USE_YTCUIDL

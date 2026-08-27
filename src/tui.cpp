@@ -125,7 +125,17 @@ TUI::~TUI() { shutdown(); }
 
 bool TUI::init() {
     if (initialized_) return true;
-    initscr(); cbreak(); noecho(); keypad(stdscr, TRUE); curs_set(0);
+    initscr();
+    // Belt-and-braces: discard anything ncurses' first read would otherwise
+    // pick up as a keypress. TermCaps::detect() (and, rarely, an extra
+    // sixel/cell-size probe) briefly put the tty in raw mode before we get
+    // here to read terminal-identification replies; each of those already
+    // drains its own leftover bytes, but flushinp() closes the small gap
+    // between "that probe finished" and "initscr() started reading" — the
+    // window where a very slow terminal reply could still land and get
+    // delivered as garbage text (e.g. straight into the search box).
+    flushinp();
+    cbreak(); noecho(); keypad(stdscr, TRUE); curs_set(0);
     nodelay(stdscr, FALSE); timeout(33); set_escdelay(25);
 
     // Disable software flow control (IXON/IXOFF). Without this, Ctrl-S is
@@ -469,16 +479,32 @@ void TUI::render(const AppState& state, const Library* lib) {
 //     (and also when a frame has no thumbnails, to clear a stale one).
 void TUI::flush_graphics() {
     Thumbnails::Gfx g = (Thumbnails::Gfx)gfx_mode_;
+    bool have_kitty_clear = (g == Thumbnails::Gfx::Kitty && kitty_drawn_);
+    if (pending_gfx_.empty() && !have_kitty_clear) return;
+
     auto out = [](const char* s, size_t n) { ssize_t w = write(STDOUT_FILENO, s, n); (void)w; };
 
+    // Save the real cursor position (DECSC) before doing ANY raw positioning,
+    // and restore it (DECRC) when we're done. Without this, every absolute
+    // "\033[y;xH" we send to place a raster image silently moves the terminal's
+    // physical cursor while ncurses' own internal model of "where the cursor
+    // is" (set by the refresh() that already ran this frame) never learns
+    // about it. The next frame's doupdate() then computes its redraw as a
+    // *relative* move from the position ncurses still believes is current —
+    // which is now wrong — so every subsequent glyph lands in the wrong cell.
+    // That desync compounds frame over frame, which is exactly the "insane
+    // corruption" that only appeared once a raster graphics mode (sixel/
+    // kitty/iterm) was enabled: block-art thumbnails never touch the raw tty,
+    // so they never hit this. Saving/restoring keeps the physical cursor
+    // exactly where ncurses left it, so its model is never invalidated.
+    out("\0337", 2);   // DECSC — save cursor
+
     // Clear previously placed kitty images first.
-    if (g == Thumbnails::Gfx::Kitty && kitty_drawn_) {
+    if (have_kitty_clear) {
         static const char kitty_delete_all[] = "\033_Ga=d,d=A\033\\";
         out(kitty_delete_all, sizeof(kitty_delete_all) - 1);
         kitty_drawn_ = false;
     }
-
-    if (pending_gfx_.empty()) return;
 
     bool drew = false;
     for (const auto& r : pending_gfx_) {
@@ -491,6 +517,8 @@ void TUI::flush_graphics() {
         drew = true;
     }
     if (g == Thumbnails::Gfx::Kitty) kitty_drawn_ = drew;
+
+    out("\0338", 2);   // DECRC — restore cursor to where ncurses left it
 
     // Force a full repaint next frame so sixel/iterm images get cleared as the
     // underlying cells are reused.
@@ -1099,8 +1127,8 @@ void TUI::draw_save_prompt(const AppState& state) {
     mvprintw(py, px + std::max(0, (pw - 16) / 2), " Save to Library ");
     attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
 
-    const char* opts[] = {"Bookmark only (web shortcut)", "Download video", "Download audio (mp3)"};
-    for (int i = 0; i < 3; i++) {
+    const char* opts[] = {"Bookmark only (web shortcut)", "Download (MP4 + MP3) -> ~/Downloads"};
+    for (int i = 0; i < 2; i++) {
         int oy = py + 2 + i;
         if (oy >= state.term_h) break;
         if (i == state.save_prompt_idx) {
