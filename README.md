@@ -379,6 +379,7 @@ MIT
 - [ytcui-dl](https://github.com/MilkmanAbi/ytcui-dl)
 - [ytcui-termux](https://github.com/MilkmanAbi/ytcui-termux)
 - [ytcui-dotmatrix](https://github.com/MilkmanAbi/ytcui-dotmatrix)
+- [OIS](https://github.com/MilkmanAbi/oneinstallsystem)
 
 > These are some of the ytcui* stuff. ytcui-dl is the library driving it all. ytcui-termux is for android, runs on termux!
 
