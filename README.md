@@ -1,4 +1,4 @@
-# ytcui (=^･ω･^=)
+# ytcui 4.1.0 (=^･ω･^=)
 
 > UPDATED TO ytcui-dl v2!! Higher quality audio and video! Better macOS input handling!
 
