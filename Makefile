@@ -32,7 +32,7 @@ ifeq ($(origin CXX),default)
 endif
 
 # ─── Base Flags ─────────────────────────────────────────────────────────────────
-CXXFLAGS = -std=c++17 -Wall -Wextra -O3 -Iinclude
+CXXFLAGS += -std=c++17 -Wall -Wextra -O3 -Iinclude
 
 # Required for wide-char functions (ncursesw)
 CXXFLAGS += -D_XOPEN_SOURCE_EXTENDED
@@ -108,7 +108,7 @@ ifeq ($(OS_TYPE),macos)
 endif
 
 CXXFLAGS += $(NCURSES_CFLAGS)
-LDFLAGS = $(NCURSES_LIBS) -lpthread $(YTCUIDL_LIBS) $(SIXEL_LIBS)
+LDFLAGS += $(NCURSES_LIBS) -lpthread $(YTCUIDL_LIBS) $(SIXEL_LIBS)
 
 # ─── Backend Selection ──────────────────────────────────────────────────────────
 # BACKEND=ytcuidl  (default) — built-in InnerTube client, no yt-dlp dependency
