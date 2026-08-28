@@ -45,7 +45,7 @@
 #include <zlib.h>
 
 #ifndef MSG_NOSIGNAL
-#define MSG_NOSIGNAL 0
+#define MSG_NOSIGNAL 0  // AAS Note to self, keep around as workaround for older macOS, BSD
 #endif
 
 namespace ytfast {
