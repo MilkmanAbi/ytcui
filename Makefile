@@ -110,6 +110,21 @@ endif
 CXXFLAGS += $(NCURSES_CFLAGS)
 LDFLAGS += $(NCURSES_LIBS) -lpthread $(YTCUIDL_LIBS) $(SIXEL_LIBS)
 
+# ─── libatomic: 32-bit GCC targets need it for std::atomic<int64_t> ──────────
+# On 32-bit arches (ppc, i386, armv6/7, mips32, …) GCC cannot inline 64-bit
+# atomic ops and instead emits calls to __atomic_fetch_add_8 / __atomic_load_8
+# / __atomic_fetch_sub_8 etc., which live in libatomic. Clang always inlines
+# these regardless of pointer width, so we only probe when not using clang.
+# __SIZEOF_POINTER__ is 4 on 32-bit targets and 8 on 64-bit; multiply by 8 to
+# get the pointer bit-width and compare against 32.
+ifeq ($(findstring clang,$(shell $(CXX) --version 2>/dev/null | head -1)),)
+    POINTER_BITS := $(shell $(CXX) -dM -E - </dev/null 2>/dev/null \
+                    | awk '/^#define __SIZEOF_POINTER__/{print $$3*8}')
+    ifeq ($(POINTER_BITS),32)
+        LDFLAGS += -latomic
+    endif
+endif
+
 # ─── Backend Selection ──────────────────────────────────────────────────────────
 # BACKEND=ytcuidl  (default) — built-in InnerTube client, no yt-dlp dependency
 # BACKEND=ytdlp              — shell out to yt-dlp (legacy)
