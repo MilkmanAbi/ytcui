@@ -33,16 +33,20 @@
 
 #include <fcntl.h>
 #include <netdb.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <zlib.h>
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 
 namespace ytfast {
 
