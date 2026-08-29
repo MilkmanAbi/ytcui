@@ -1,12 +1,12 @@
 # ytcui 4.1.0 (=^･ω･^=)
 
-> UPDATED TO ytcui-dl v2!! Higher quality audio and video! Better macOS input handling!
+> UPDATED TO ytcui-dl v2!! Higher quality audio and video!
 
 > Check out - [ytcui-termux](https://github.com/MilkmanAbi/ytcui-termux) if you waant basically free youtube music for your phone (sleep timer included!) 
 
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
-Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in, experimental YouTube client) or the mature **yt-dlp**.
+Built in C++ with ncurses. Plays via mpv, fetches via **ytcui-dl** (built-in, experimental YouTube client of mine) or the mature **yt-dlp**.
 
 <img src="Pictures/ytcui-new.png" alt="ytcui screenshot">
 
@@ -20,12 +20,6 @@ Built in C++ with ncurses. Plays via **mpv**, fetches via **ytcui-dl** (built-in
 </p>
 
 > ytcui in streamlined view >_O
-
----
-
-## ⚠️ 4.0.0 is a breaking update — manual migration required
-
-**If you have ytcui < 4.0.0 installed, you must uninstall it manually before upgrading.** The install system changed from OIS v1 to OIS v4 and the two are not compatible. Find and delete the old binary (usually `/usr/local/bin/ytcui` or `~/.local/bin/ytcui`) and any leftover `~/.local/bin/.ytcui-ois` shim, then run the new installer fresh. Updates *from* 4.0.0 onward are handled cleanly by OIS with no manual steps. OIS v4 onwards are backwards compatible, handling updates cleaner and safer.
 
 ---
 
