@@ -1,8 +1,6 @@
 # ytcui 4.1.0 (=^･ω･^=)
 
-> UPDATED TO ytcui-dl v2!! Higher quality audio and video!
-
-> Check out - [ytcui-termux](https://github.com/MilkmanAbi/ytcui-termux) if you waant basically free youtube music for your phone (sleep timer included!) 
+> **Due to YouTube changes once again, ytcui-dl is broken. use the yt-dlp backend when installing!!**
 
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
