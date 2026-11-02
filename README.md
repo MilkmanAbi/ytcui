@@ -2,6 +2,8 @@
 
 > **Due to YouTube changes once again, ytcui-dl is broken. use the yt-dlp backend when installing!!**
 
+> **Upgrades coming soon!!** 
+
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
 Built in C++ with ncurses. Plays via mpv, fetches via **ytcui-dl** (built-in, experimental YouTube client of mine) or the mature **yt-dlp**.
