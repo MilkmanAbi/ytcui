@@ -88,6 +88,9 @@ private:
     void draw_browser_popup(const AppState& state);
     void draw_sort_menu(const AppState& state);
     void draw_save_prompt(const AppState& state);
+    void draw_timer_prompt(const AppState& state);
+    void draw_queue_view(const AppState& state);
+    void draw_share_menu(const AppState& state);
 
     // Playlist UI
     void draw_playlists_tab(const AppState& state, const Library* lib);

@@ -3,6 +3,7 @@
 #include "theme.h"
 #include "termcaps.h"
 #include "log.h"
+#include "core/share.h"
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -465,6 +466,9 @@ void TUI::render(const AppState& state, const Library* lib) {
     if (state.focus == Panel::NewPlaylist)  draw_new_playlist_prompt(state);
     if (state.show_shortcuts)              draw_shortcuts(state);
     if (state.show_settings)               draw_settings(state);
+    if (state.show_timer_prompt || state.focus == Panel::TimerPrompt) draw_timer_prompt(state);
+    if (state.show_queue || state.focus == Panel::QueueView)          draw_queue_view(state);
+    if (state.show_share  || state.focus == Panel::ShareMenu)         draw_share_menu(state);
     refresh();
     flush_graphics();   // emit raster thumbnails (Sixel/Kitty/iTerm) post-refresh
 }
@@ -1987,6 +1991,133 @@ void TUI::stream_playing(const AppState& state) {
                     COLOR_PAIR(Color::ACCENT) | A_BOLD);
     }
     center_text(H - 1, W, "space·+/-·</>·Ctrl-S·b·q", COLOR_PAIR(Color::BG) | A_DIM);
+}
+
+// ─── v5 overlay: sleep timer prompt ───────────────────────────────────────────
+void TUI::draw_timer_prompt(const AppState& state) {
+    int pw = std::min(46, state.term_w - 4), ph = 7;
+    if (pw < 12 || ph > state.term_h - 2) return;
+    int px = std::max(0, (state.term_w - pw) / 2);
+    int py = std::max(0, (state.term_h - ph) / 2);
+
+    for (int i = 0; i < ph && py + i < state.term_h; i++) mvhline(py + i, px, ' ', pw);
+    draw_box(py, px, ph, pw, Color::STATS);
+
+    attron(COLOR_PAIR(Color::STATS) | A_BOLD);
+    mvprintw(py, px + std::max(0, (pw - 14) / 2), " Sleep Timer ");
+    attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
+
+    attron(COLOR_PAIR(Color::BG) | A_DIM);
+    mvprintw(py + 1, px + 2, "%s", utf8_truncate("e.g.  30m   1h23m   45s", pw - 4).c_str());
+    attroff(COLOR_PAIR(Color::BG) | A_DIM);
+
+    // Input line
+    attron(COLOR_PAIR(Color::TITLE) | A_BOLD);
+    std::string prompt = "> " + state.timer_prompt_input + "_";
+    mvprintw(py + 3, px + 2, "%s", utf8_truncate(prompt, pw - 4).c_str());
+    attroff(COLOR_PAIR(Color::TITLE) | A_BOLD);
+
+    if (state.timer_status.size()) {
+        attron(COLOR_PAIR(Color::CHANNEL));
+        mvprintw(py + 4, px + 2, "%s", utf8_truncate("Active: " + state.timer_status, pw - 4).c_str());
+        attroff(COLOR_PAIR(Color::CHANNEL));
+    }
+
+    attron(COLOR_PAIR(Color::BG) | A_DIM);
+    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=set  Ctrl-T=cancel  Esc=close ", pw - 4).c_str());
+    attroff(COLOR_PAIR(Color::BG) | A_DIM);
+}
+
+// ─── v5 overlay: queue view ────────────────────────────────────────────────────
+void TUI::draw_queue_view(const AppState& state) {
+    int n  = (int)state.queue_items.size();
+    int ph = std::min(n + 5, state.term_h - 4);
+    int pw = std::min(60, state.term_w - 4);
+    if (pw < 12 || ph < 4) return;
+    int px = std::max(0, (state.term_w - pw) / 2);
+    int py = std::max(0, (state.term_h - ph) / 2);
+
+    for (int i = 0; i < ph && py + i < state.term_h; i++) mvhline(py + i, px, ' ', pw);
+    draw_box(py, px, ph, pw, Color::STATS);
+
+    attron(COLOR_PAIR(Color::STATS) | A_BOLD);
+    std::string title = n == 0 ? " Queue (empty) " : " Queue (" + std::to_string(n) + ") ";
+    mvprintw(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
+    attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
+
+    if (n == 0) {
+        attron(COLOR_PAIR(Color::BG) | A_DIM);
+        mvprintw(py + 2, px + 2, "Queue is empty.  Use 'Add to queue' from the action menu.");
+        attroff(COLOR_PAIR(Color::BG) | A_DIM);
+    } else {
+        int max_rows = ph - 3;
+        for (int i = 0; i < n && i < max_rows; i++) {
+            int row = py + 1 + i;
+            if (row >= state.term_h) break;
+            const auto& v = state.queue_items[i];
+            std::string line = std::to_string(i + 1) + ". " + v.title;
+            if (i == state.queue_sel) {
+                attron(sel_attr());
+                mvprintw(row, px + 1, " %-*s", pw - 3, utf8_truncate(line, pw - 4).c_str());
+                attroff(sel_attr());
+            } else {
+                attron(COLOR_PAIR(Color::BG));
+                mvprintw(row, px + 2, "%s", utf8_truncate(line, pw - 4).c_str());
+                attroff(COLOR_PAIR(Color::BG));
+            }
+        }
+    }
+    attron(COLOR_PAIR(Color::BG) | A_DIM);
+    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=play  d/Del=remove  Ctrl-Q/Esc=close ", pw - 4).c_str());
+    attroff(COLOR_PAIR(Color::BG) | A_DIM);
+}
+
+// ─── v5 overlay: share menu (QR code + URL) ───────────────────────────────────
+void TUI::draw_share_menu(const AppState& state) {
+    if (state.share_url.empty()) return;
+
+    auto qr = ytcui::share::encode(state.share_url);
+    auto rows = ytcui::share::to_ascii(qr);
+    int qr_h  = (int)rows.size();
+    int qr_w  = rows.empty() ? 0 : (int)rows[0].size();
+
+    // Panel size: enough for QR + URL + hint
+    int ph = std::min(qr_h + 5, state.term_h - 2);
+    int pw = std::min(std::max(qr_w + 4, (int)state.share_url.size() + 6), state.term_w - 4);
+    if (pw < 12 || ph < 4) return;
+    int px = std::max(0, (state.term_w - pw) / 2);
+    int py = std::max(0, (state.term_h - ph) / 2);
+
+    for (int i = 0; i < ph && py + i < state.term_h; i++) mvhline(py + i, px, ' ', pw);
+    draw_box(py, px, ph, pw, Color::STATS);
+
+    attron(COLOR_PAIR(Color::STATS) | A_BOLD);
+    mvprintw(py, px + std::max(0, (pw - 10) / 2), " Share ");
+    attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
+
+    // QR code: dark module = █ (full block), light = space, dark-on-light
+    int qr_x = px + std::max(1, (pw - qr_w) / 2);
+    for (int r = 0; r < qr_h && py + 1 + r < state.term_h - 1; r++) {
+        attron(COLOR_PAIR(Color::BG));
+        for (int c = 0; c < (int)rows[r].size() && qr_x + c < state.term_w - 1; c++) {
+            bool dark = (rows[r][c] == 'X');
+            // dark-on-light: dark module → reverse (black on white), light → normal
+            if (dark) attron(A_REVERSE);
+            mvaddch(py + 1 + r, qr_x + c, ' ');
+            if (dark) attroff(A_REVERSE);
+        }
+        attroff(COLOR_PAIR(Color::BG));
+    }
+
+    int url_row = py + 1 + qr_h;
+    if (url_row < state.term_h - 2 && url_row < py + ph - 2) {
+        attron(COLOR_PAIR(Color::TITLE));
+        mvprintw(url_row, px + 2, "%s", utf8_truncate(state.share_url, pw - 4).c_str());
+        attroff(COLOR_PAIR(Color::TITLE));
+    }
+    attron(COLOR_PAIR(Color::BG) | A_DIM);
+    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Copied to clipboard  —  any key to close ", pw - 4).c_str());
+    attroff(COLOR_PAIR(Color::BG) | A_DIM);
 }
 
 } // namespace ytui

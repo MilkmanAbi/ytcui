@@ -341,6 +341,14 @@ bool InputHandler::handle(int ch, AppState& state) {
     if (state.focus == Panel::PlaylistView)   { handle_playlist_view(ch, state);   return false; }
     if (state.focus == Panel::PlaylistActions){ handle_playlist_actions(ch, state); return false; }
     if (state.focus == Panel::PlaylistList)   { handle_playlist_list(ch, state);   return false; }
+    if (state.focus == Panel::TimerPrompt)    { handle_timer_prompt(ch, state);    return false; }
+    if (state.focus == Panel::QueueView)      { handle_queue_view(ch, state);      return false; }
+    if (state.focus == Panel::ShareMenu) {
+        // any key dismisses the share menu
+        state.show_share = false;
+        state.focus = Panel::Results;
+        return false;
+    }
 
     // ── Global keys (configurable via Ctrl-S settings) ───────────────────────
     // These honour the live keybindings so rebinds actually take effect. They
@@ -373,6 +381,17 @@ bool InputHandler::handle(int ch, AppState& state) {
         state.show_shortcuts = !state.show_shortcuts;
         if (state.show_shortcuts)
             state.focus = Panel::Shortcuts;
+        return false;
+    }
+    // Ctrl-Q: toggle queue view
+    if (!in_search && ch == 0x11) {
+        if (state.show_queue) {
+            state.show_queue = false;
+            state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+        } else {
+            state.show_queue = true;
+            state.focus = Panel::QueueView;
+        }
         return false;
     }
     if (!in_search && ch == k.quit) {
@@ -793,6 +812,54 @@ void InputHandler::handle_new_playlist(int ch, AppState& state) {
         default:
             if (ch >= 32 && ch < 127 && state.new_playlist_name.size() < 60)
                 state.new_playlist_name += (char)ch;
+            break;
+    }
+}
+
+// ─── Timer prompt ─────────────────────────────────────────────────────────────
+void InputHandler::handle_timer_prompt(int ch, AppState& state) {
+    switch (ch) {
+        case KEY_BACKSPACE: case 127: case 8:
+            if (!state.timer_prompt_input.empty())
+                state.timer_prompt_input.pop_back();
+            break;
+        case '\n': case KEY_ENTER:
+            state.status_message = "__APPLY_TIMER__";
+            state.show_timer_prompt = false;
+            state.focus = Panel::Results;
+            break;
+        case 27:
+            state.show_timer_prompt = false;
+            state.focus = Panel::Results;
+            break;
+        default:
+            if (ch >= 32 && ch < 127 && state.timer_prompt_input.size() < 16)
+                state.timer_prompt_input += (char)ch;
+            break;
+    }
+}
+
+// ─── Queue view ───────────────────────────────────────────────────────────────
+void InputHandler::handle_queue_view(int ch, AppState& state) {
+    int n = (int)state.queue_items.size();
+    switch (ch) {
+        case 'j': case KEY_DOWN:
+            if (state.queue_sel < n - 1) state.queue_sel++;
+            break;
+        case 'k': case KEY_UP:
+            if (state.queue_sel > 0) state.queue_sel--;
+            break;
+        case '\n': case KEY_ENTER:
+            state.status_message = "__QUEUE_PLAY__";
+            break;
+        case KEY_DC: case 'd':
+            state.status_message = "__QUEUE_REMOVE__";
+            break;
+        case 27: case 'q': case 0x11:  // Esc, q, or Ctrl-Q
+            state.show_queue = false;
+            state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+            break;
+        default:
             break;
     }
 }

@@ -5,6 +5,8 @@
 #include "auth.h"
 #include "theme.h"
 #include "compat.h"
+#include "core/url.h"
+#include "core/share.h"
 #include <cstdlib>
 #include <ctime>
 #include <sstream>
@@ -340,6 +342,11 @@ void App::build_actions() {
     state_.actions.push_back({Action::AddToPlaylist, "Add to playlist..."});
     state_.actions.push_back({Action::SaveToLibrary, "Save to library..."});
     state_.actions.push_back({Action::CopyURL,       "Copy URL"});
+    state_.actions.push_back({Action::Share,         "Share (QR + clipboard)"});
+    state_.actions.push_back({Action::AddToQueue,    "Add to queue"});
+    state_.actions.push_back({Action::PlayNext,      "Play next"});
+    state_.actions.push_back({Action::LoopToggle,
+        state_.loop_enabled ? "Loop: off" : "Loop: on"});
 
     if (state_.logged_in)
         state_.actions.push_back({Action::Logout, "Logout (" + state_.auth_browser + ")"});
@@ -406,11 +413,11 @@ void App::enter_playlist(const std::string& playlist_id) {
 
 int App::run() {
     if (!tui_.init()) return 1;
-    // ncurses has now reported the real colour count (refine_from_ncurses);
-    // re-run the capability gate authoritatively so a terminal that turned out
-    // to have no colour gets thumbnails/graphics disabled before first render.
     apply_capability_overrides(/*authoritative=*/true);
     state_.status_message = rgreet();
+    watch_state_.load();
+
+    bool was_playing = false;
 
     while (state_.running) {
         tui_.get_dimensions(state_.term_w, state_.term_h);
@@ -430,6 +437,15 @@ int App::run() {
             state_.playback_pos = 0;
             state_.playback_dur = 0;
         }
+
+        // v5: end-of-play detection + sleep timer
+        {
+            bool just_ended = was_playing && !state_.is_playing;
+            was_playing = state_.is_playing;
+            if (just_ended) on_video_end();
+        }
+        tick_timer();
+        state_.timer_status = timer_.active() ? timer_.describe() : "";
 
         // ── Resolve UI mode ───────────────────────────────────────────────────
         // Default is the full ("normal") UI. We only drop to the streamlined
@@ -514,7 +530,32 @@ int App::run() {
         }
         if (state_.show_settings) {
             handle_settings_key(ch);
-            continue;   // settings UI owns all keys while open
+            continue;
+        }
+
+        // ── v5 modal panels ───────────────────────────────────────────────────
+        if (state_.show_timer_prompt) {
+            // TimerPrompt is rendered / handled via Panel::TimerPrompt focus;
+            // input_.handle already dispatches it via handle_timer_prompt().
+        }
+
+        // Ctrl-T: sleep timer prompt
+        if (ch == 0x14 && !state_.show_timer_prompt) {
+            handle_timer_key();
+            continue;
+        }
+        // Ctrl-R: loop toggle
+        if (ch == 0x12) {
+            state_.loop_enabled = !state_.loop_enabled;
+            state_.status_message = state_.loop_enabled
+                ? "Loop on — will restart when done (^_^)" : "Loop off";
+            continue;
+        }
+        // Ctrl-B: backend toggle (ytcui-dl <-> yt-dlp)
+        if (ch == 0x02) {
+            switch_backend(state_.active_backend == BackendKind::YtcuiDl
+                           ? BackendKind::YtDlp : BackendKind::YtcuiDl);
+            continue;
         }
 
         bool should_search = input_.handle(ch, state_);
@@ -550,6 +591,38 @@ int App::run() {
             int t = (int)state_.seek_to_secs;
             char sbuf[32]; snprintf(sbuf, sizeof(sbuf), ">> %d:%02d", t / 60, t % 60);
             state_.status_message = sbuf;
+        }
+        else if (state_.status_message == "__APPLY_TIMER__") {
+            apply_timer_input();
+        }
+        else if (state_.status_message == "__QUEUE_PLAY__") {
+            if (state_.queue_sel >= 0 && state_.queue_sel < (int)queue_.size()) {
+                Video v = queue_.items()[state_.queue_sel];
+                queue_.remove((std::size_t)state_.queue_sel);
+                sync_queue_display();
+                player_.stop();
+                player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Audio);
+                state_.status_message = "Playing: " + v.title;
+                state_.show_queue = false;
+                state_.focus = Panel::Results;
+            } else {
+                state_.status_message = rgreet();
+            }
+        }
+        else if (state_.status_message == "__QUEUE_REMOVE__") {
+            if (state_.queue_sel >= 0 && state_.queue_sel < (int)queue_.size()) {
+                queue_.remove((std::size_t)state_.queue_sel);
+                sync_queue_display();
+                state_.queue_sel = std::clamp(state_.queue_sel, 0,
+                                              std::max(0, (int)queue_.size() - 1));
+                if (queue_.empty()) {
+                    state_.show_queue = false;
+                    state_.focus = Panel::Results;
+                    state_.status_message = "Queue empty";
+                } else {
+                    state_.status_message = "Removed from queue";
+                }
+            }
         }
 
         // ── Streamlined-mode section loaders & playback ───────────────────────
@@ -816,6 +889,25 @@ int App::run() {
 }
 
 void App::do_search() {
+    // v5: if the query is a YouTube URL, bypass the search API entirely
+    if (ytcui::url::looks_like_url(state_.search_query)) {
+        auto p = ytcui::url::parse(state_.search_query);
+        if (p.kind == ytcui::url::Kind::Video && !p.video_id.empty()) {
+            Video v;
+            v.id = p.video_id;
+            v.title = "(direct link) " + p.video_id;
+            state_.results = { v };
+            state_.selected_result = 0;
+            state_.results_scroll  = 0;
+            state_.actions_visible = true;
+            state_.selected_action = 0;
+            state_.active_tab      = Tab::Results;
+            state_.focus           = Panel::Actions;
+            state_.status_message  = "Direct link — press Enter to play (^_^)";
+            return;
+        }
+    }
+
     state_.status_message = "Searching... (>_<)";
     state_.results.clear();
     state_.selected_result = 0;
@@ -998,6 +1090,25 @@ void App::execute_action(Action action) {
             state_.logged_in = false;
             state_.auth_browser.clear();
             state_.status_message = "Logged out (~_~)/";
+            return;
+        case Action::Share: {
+            std::string url = "https://youtu.be/" + v.id;
+            show_share_menu(url);
+            return;
+        }
+        case Action::AddToQueue:
+            queue_.add(v);
+            sync_queue_display();
+            state_.status_message = "Added to queue: " + v.title.substr(0, 30);
+            return;
+        case Action::PlayNext:
+            queue_.play_next(v);
+            sync_queue_display();
+            state_.status_message = "Play next: " + v.title.substr(0, 30);
+            return;
+        case Action::LoopToggle:
+            state_.loop_enabled = !state_.loop_enabled;
+            state_.status_message = state_.loop_enabled ? "Loop on (^_^)" : "Loop off";
             return;
         default:
             break;  // Playlist-only actions are handled by execute_playlist_action
@@ -1291,6 +1402,95 @@ void App::handle_settings_key(int ch) {
             // handled above; nothing else to do here.
             return;
     }
+}
+
+// ─── v5 feature methods ────────────────────────────────────────────────────────
+
+void App::tick_timer() {
+    if (!timer_.active()) return;
+    if (timer_.fire_if_due()) {
+        if (player_.is_playing() && !player_.is_paused()) {
+            player_.toggle_pause();
+            state_.is_paused = true;
+        }
+        state_.status_message = "Sleep timer fired — paused (zzz)";
+        Log::write("SleepTimer fired");
+    }
+}
+
+void App::on_video_end() {
+    // Record the finished video in watch state
+    if (!state_.now_playing.empty())
+        watch_state_.record("", state_.now_playing, "", 0, 0, /*finished=*/true);
+
+    // Loop: replay the same video if loop is enabled and no queue entry follows
+    if (state_.loop_enabled && queue_.empty()) {
+        if (!state_.results.empty() && state_.selected_result < (int)state_.results.size()) {
+            const auto& v = state_.results[state_.selected_result];
+            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Audio);
+            state_.status_message = "Looping: " + v.title;
+        }
+        return;
+    }
+
+    // Queue: take the next item
+    if (!queue_.empty()) {
+        Video next = queue_.take();
+        sync_queue_display();
+        player_.play("https://www.youtube.com/watch?v=" + next.id, next.title, PlayMode::Audio);
+        state_.status_message = "Playing next: " + next.title;
+    }
+}
+
+void App::sync_queue_display() {
+    state_.queue_items = queue_.items();
+    state_.queue_sel   = std::clamp(state_.queue_sel, 0,
+                                    std::max(0, (int)queue_.size() - 1));
+}
+
+void App::handle_timer_key() {
+    state_.timer_prompt_input.clear();
+    if (timer_.active()) {
+        timer_.cancel();
+        state_.status_message = "Timer cancelled";
+        return;
+    }
+    state_.show_timer_prompt = true;
+    state_.focus = Panel::TimerPrompt;
+}
+
+void App::apply_timer_input() {
+    state_.show_timer_prompt = false;
+    state_.focus = Panel::Results;
+    int secs = ytcui::parse_duration(state_.timer_prompt_input);
+    if (secs <= 0) {
+        state_.status_message = "Bad duration — try '30m' or '1h23m'";
+        return;
+    }
+    timer_.set(secs);
+    state_.status_message = "Timer set: " + timer_.describe();
+    state_.timer_prompt_input.clear();
+}
+
+void App::show_share_menu(const std::string& url) {
+    state_.share_url = url;
+    state_.show_share = true;
+    state_.focus = Panel::ShareMenu;
+    // copy to clipboard immediately; QR is rendered in draw_share_menu
+    auto res = ytcui::share::copy(url);
+    if (res.ok)
+        state_.status_message = "Copied! " + url;
+    else
+        state_.status_message = "QR ready — clipboard unavailable";
+}
+
+void App::switch_backend(BackendKind k) {
+    state_.active_backend = k;
+    config_.backend = k;
+    config_.save();
+    const char* name = (k == BackendKind::YtcuiDl) ? "ytcui-dl (native)" : "yt-dlp";
+    state_.status_message = std::string("Backend: ") + name;
+    Log::write("Backend switched to %s", name);
 }
 
 } // namespace ytui

@@ -29,6 +29,8 @@ private:
     void handle_playlist_actions(int ch, AppState& state);
     void handle_playlist_pick(int ch, AppState& state);
     void handle_new_playlist(int ch, AppState& state);
+    void handle_timer_prompt(int ch, AppState& state);
+    void handle_queue_view(int ch, AppState& state);
 
     // Live keybindings (owned by Config in App). May be null before set.
     const Config::KeyBindings* keys_ = nullptr;
