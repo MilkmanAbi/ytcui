@@ -534,29 +534,13 @@ void TUI::flush_graphics() {
 }
 
 // ─── Header ───────────────────────────────────────────────────────────────────
-void TUI::draw_header(const AppState& state) {
-    // Back button at top-left: Tab skips it, mouse-clickable (see input.cpp).
-    // Only shown when there is something to go back to.
-    bool show_back = (state.focus != Panel::Search && state.focus != Panel::Results
-                   && state.focus != Panel::Tabs);
-    if (show_back && state.term_w > 4) {
-        attron(COLOR_PAIR(Color::BORDER));
-        mvprintw(0, 0, " < ");
-        attroff(COLOR_PAIR(Color::BORDER));
-    }
-
-    const char* t = "Search YouTube";
-    int tlen = (int)strlen(t);
-    int x = std::max(0, (state.term_w - tlen) / 2);
-    if (x + tlen > state.term_w) return;
-    attron(COLOR_PAIR(Color::HEADER));
-    mvprintw(0, x, "%s", t);
-    attroff(COLOR_PAIR(Color::HEADER));
+void TUI::draw_header(const AppState& /*state*/) {
+    // Intentionally empty — the top row is reclaimed by the search box.
 }
 
 // ─── Search box ───────────────────────────────────────────────────────────────
 void TUI::draw_search_box(const AppState& state) {
-    int y = 1, w = state.term_w;
+    int y = 0, w = state.term_w;
     if (w < 8) return;
 
     // Hamburger button: 5 cols wide on the right [ ☰ ]
@@ -590,7 +574,7 @@ void TUI::draw_search_box(const AppState& state) {
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 void TUI::draw_tabs(const AppState& state) {
     if (state.term_w < 20) return;
-    int y = 4;
+    int y = 3;
 
     bool has_results = !state.results.empty();
     const char* lb[] = {"Library", "Playlists", "Feed", "History", "Results"};
@@ -632,7 +616,7 @@ void TUI::draw_tabs(const AppState& state) {
 
 // ─── Home panels (Library / Feed / History tabs) ─────────────────────────────
 void TUI::draw_home_panels(const AppState& state, const Library* lib) {
-    int sy = 7, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
     if (ah < 3 || state.term_w < 4) return;
     int lw = std::max(10, state.term_w * 50 / 100);
     int rw = state.term_w - lw;
@@ -842,7 +826,7 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
 
 // ─── Results panel ────────────────────────────────────────────────────────────
 void TUI::draw_results_panel(const AppState& state) {
-    int sy = 7, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
     if (ah < 3 || state.term_w < 4) return;
 
     int lw = state.term_w * 60 / 100;
@@ -908,7 +892,7 @@ void TUI::draw_results_panel(const AppState& state) {
 // ─── Actions panel ────────────────────────────────────────────────────────────
 void TUI::draw_actions_panel(const AppState& state) {
     if (state.results.empty()) return;
-    int sy = 7, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
     if (ah < 3 || state.term_w < 4) return;
 
     int lw = state.term_w * 30 / 100;
@@ -1276,7 +1260,7 @@ void TUI::draw_box(int y, int x, int h, int w, int cp) {
 
 // ─── Playlists tab — list of all playlists ────────────────────────────────────
 void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
-    int sy = 7, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
     if (ah < 3 || state.term_w < 4 || !lib) return;
 
     const auto& pls = lib->playlists();
@@ -1331,14 +1315,34 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
         bool sel = (idx == state.selected_playlist) && focused;
         const auto& pl = pls[idx];
 
+        // Color tag dot (● in 256-color, hidden in mono)
+        bool has_tag = (!mono_mode_ && pl.color_tag >= 0 && pl.color_tag < 7);
+        int  dot_w   = has_tag ? 2 : 0;   // "● " takes 2 columns
+
+        if (has_tag) {
+            int cp = Color::ACCENT;
+            if (thumb_color_ready_ && thumb_pairs_ > 0) {
+                int cidx = kPlaylistTagColors[pl.color_tag];
+                int slot = (thumb_pairs_ == 256) ? cidx : cidx * thumb_pairs_ / 256;
+                if (slot >= thumb_pairs_) slot = thumb_pairs_ - 1;
+                cp = THUMB_COLOR_BASE + slot;
+            }
+            attron(COLOR_PAIR(cp) | A_BOLD);
+            mvprintw(row, 2, "\xe2\x97\x8f ");  // UTF-8: ●
+            attroff(COLOR_PAIR(cp) | A_BOLD);
+        }
+
+        int name_x = 2 + dot_w;
+        int avail  = name_w - dot_w - 1;
+
         if (sel) {
             attron(sel_attr());
-            mvprintw(row, 2, " %-*s", name_w - 1, utf8_truncate(pl.name, name_w - 2).c_str());
+            mvprintw(row, name_x, " %-*s", avail, utf8_truncate(pl.name, avail).c_str());
             if (count_w > 0) printw("  %*d ", count_w - 3, (int)pl.videos.size());
             attroff(sel_attr());
         } else {
             attron(COLOR_PAIR(Color::TITLE));
-            mvprintw(row, 3, "%s", utf8_truncate(pl.name, name_w).c_str());
+            mvprintw(row, name_x + 1, "%s", utf8_truncate(pl.name, avail).c_str());
             attroff(COLOR_PAIR(Color::TITLE));
             if (count_w > 0) {
                 attron(COLOR_PAIR(Color::STATS) | A_DIM);
@@ -1351,14 +1355,14 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
     // Hint bar
     if (ey - 1 > sy + 2) {
         attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(ey - 1, 2, "Enter=open  j/k=navigate  n=new");
+        mvprintw(ey - 1, 2, "Enter=open  j/k=navigate  n=new  c=color");
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
     }
 }
 
 // ─── Playlist view — video list inside a playlist ────────────────────────────
 void TUI::draw_playlist_view(const AppState& state, const Library* lib) {
-    int sy = 7, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
     if (ah < 3 || state.term_w < 4 || !lib) return;
 
     const Playlist* pl = lib->get_playlist(state.current_playlist_id);
@@ -1460,7 +1464,7 @@ void TUI::draw_playlist_actions_panel(const AppState& state, const Library* lib)
     const Playlist* pl = lib->get_playlist(state.current_playlist_id);
     if (!pl || pl->videos.empty()) return;
 
-    int sy = 7, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
     if (ah < 3 || state.term_w < 4) return;
 
     int lw = state.term_w * 30 / 100;

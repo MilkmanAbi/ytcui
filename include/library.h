@@ -43,6 +43,7 @@ struct Playlist {
     std::vector<VideoEntry> videos;
     long long created_at = 0;
     long long updated_at = 0;
+    int color_tag = -1;       // -1=none, 0-6=rainbow (red,orange,yellow,green,blue,purple,pink)
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -293,6 +294,14 @@ public:
         return std::string(home ? home : "/tmp") + "/.local/share/ytcui";
     }
 
+    // Cycle playlist color tag: -1 (none) → 0 (red) → … → 6 (pink) → -1
+    void toggle_playlist_color(const std::string& id) {
+        Playlist* pl = get_playlist_mut(id);
+        if (!pl) return;
+        pl->color_tag = (pl->color_tag >= 6) ? -1 : pl->color_tag + 1;
+        save_playlists(data_dir() + "/playlists.json");
+    }
+
 private:
     std::vector<BookmarkEntry> bookmarks_;
     std::vector<VideoEntry> history_;
@@ -398,6 +407,7 @@ private:
                 pl.name = item.value("name", "");
                 pl.created_at = item.value("created_at", 0LL);
                 pl.updated_at = item.value("updated_at", 0LL);
+                pl.color_tag  = item.value("color_tag", -1);
                 
                 if (item.contains("videos") && item["videos"].is_array()) {
                     for (const auto& vi : item["videos"]) {
@@ -429,7 +439,8 @@ private:
                                   {"duration_seconds", v.duration_seconds}, {"timestamp", v.timestamp}});
             }
             j.push_back({{"id", pl.id}, {"name", pl.name}, {"videos", videos},
-                         {"created_at", pl.created_at}, {"updated_at", pl.updated_at}});
+                         {"created_at", pl.created_at}, {"updated_at", pl.updated_at},
+                         {"color_tag", pl.color_tag}});
         }
         f << j.dump(2);
     }

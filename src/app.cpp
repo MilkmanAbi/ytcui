@@ -816,6 +816,13 @@ int App::run() {
             state_.status_message = rgreet();
         }
 
+        if (state_.status_message == "__PLAYLIST_TAG__") {
+            const auto& pls = library_.playlists();
+            if (state_.selected_playlist >= 0 && state_.selected_playlist < (int)pls.size())
+                library_.toggle_playlist_color(pls[state_.selected_playlist].id);
+            state_.status_message = rgreet();
+        }
+
         // Playlist picker — user selected a playlist or "Create new"
         if (state_.status_message == "__PLAYLIST_PICKED__") {
             const auto& pls = library_.playlists();

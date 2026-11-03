@@ -7,7 +7,7 @@ namespace ytui {
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 static int calc_max_visible(const AppState& s) {
-    int start_y = 7, end_y = s.term_h - 4;
+    int start_y = 6, end_y = s.term_h - 4;
     return std::max(1, end_y - start_y - 1);
 }
 
@@ -178,18 +178,8 @@ bool InputHandler::handle(int ch, AppState& state) {
 
         int my = ev.y, mx = ev.x;
 
-        // Back button: top-left " < " at row 0, columns 0-2
-        if (my == 0 && mx <= 2
-            && state.focus != Panel::Search && state.focus != Panel::Results
-            && state.focus != Panel::Tabs) {
-            // Treat as Escape: go back to previous panel
-            state.focus = Panel::Results;
-            state.actions_visible = false;
-            return false;
-        }
-
-        // Search / hamburger row (rows 1-3)
-        if (my >= 1 && my <= 3) {
+        // Search / hamburger row (rows 0-2)
+        if (my >= 0 && my <= 2) {
             if (mx >= state.term_w - 5) {
                 state.sort_col = 0; state.sort_row = 0;
                 state.focus = Panel::SortMenu;
@@ -199,8 +189,8 @@ bool InputHandler::handle(int ch, AppState& state) {
             return false;
         }
 
-        // Tab bar (rows 4-6)
-        if (my >= 4 && my <= 6) {
+        // Tab bar (rows 3-5)
+        if (my >= 3 && my <= 5) {
             // Calculate tab positions matching draw_tabs()
             bool has_results = !state.results.empty();
             int n_tabs = has_results ? 5 : 4;
@@ -232,7 +222,7 @@ bool InputHandler::handle(int ch, AppState& state) {
         }
 
         // Main content area
-        int start_y = 7, end_y = state.term_h - 4;
+        int start_y = 6, end_y = state.term_h - 4;
         if (my <= start_y || my >= end_y) return false;
 
         // Playlist list tab
@@ -467,11 +457,9 @@ bool InputHandler::handle(int ch, AppState& state) {
                 state.current_playlist_id.clear();
                 break;
             case Panel::Results:
-                // Re-run search so user can pick a different video.
-                // Signal app.cpp to re-search the current query.
+                // Return to search box; query is preserved for editing.
+                // User presses Enter to re-search or edits and searches.
                 state.focus = Panel::Search;
-                state.active_tab = Tab::Results;
-                state.status_message = "__RESEARCH__";
                 break;
             default:
                 state.focus = Panel::Search;
@@ -736,6 +724,9 @@ void InputHandler::handle_playlist_list(int ch, AppState& state) {
             break;
         case '/':
             state.focus = Panel::Search;
+            break;
+        case 'c':
+            state.status_message = "__PLAYLIST_TAG__";
             break;
     }
 }

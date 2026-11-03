@@ -191,7 +191,7 @@ struct AppState {
     std::string new_playlist_name;  // being typed in NewPlaylist dialog
 
     // ── Streamlined mode (auto-engaged on very narrow terminals) ─────────────
-    int   ui_mode        = 0;   // 0 = normal, 1 = streamlined, 2 = minimal
+    int   ui_mode        = 0;   // 0 = normal, 1 = streamlined
     int   stream_screen  = 0;   // cast of StreamScreen
     int   stream_menu_sel = 0;  // selected row in the iPod-style menu
     int   stream_action_sel = 0;// 0 = Play video, 1 = Play audio
@@ -245,6 +245,12 @@ inline std::vector<std::string> stream_menu_items(const AppState& s) {
     if (s.is_playing) v.push_back("Now Playing");
     return v;
 }
+
+// 7 rainbow colors as 256-color ANSI indices, used with THUMB_COLOR_BASE
+// for playlist tag dots. Index 0-6: red, orange, yellow, green, blue, purple, pink.
+static const int kPlaylistTagColors[7] = {196, 208, 226, 46, 27, 93, 200};
+// Glyph markers for mono mode (one per tag index)
+static const char* const kPlaylistTagGlyphs[7] = {"*", "+", "~", "#", "@", "%", "&"};
 
 namespace Color {
     constexpr int BG         = 1;
