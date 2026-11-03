@@ -140,6 +140,7 @@ bool InputHandler::handle(int ch, AppState& state) {
     if (state.focus == Panel::ShareMenu)   { state.show_share = false; state.focus = Panel::Results; return false; }
 
     // Narrow-terminal streamlined UI has its own, simpler navigation.
+    if (state.ui_mode == 1) return stream_handle(ch, state);
 
     // ── Mouse ────────────────────────────────────────────────────────────────
     if (ch == KEY_MOUSE) {
@@ -457,9 +458,11 @@ bool InputHandler::handle(int ch, AppState& state) {
                 state.current_playlist_id.clear();
                 break;
             case Panel::Results:
-                // Return to search box; query is preserved for editing.
-                // User presses Enter to re-search or edits and searches.
+                // Leave Results: go back to search box on the Feed tab.
+                // Staying on Tab::Results keeps the results visible and looks
+                // like nothing happened, so switch the tab away.
                 state.focus = Panel::Search;
+                state.active_tab = Tab::Feed;
                 break;
             default:
                 state.focus = Panel::Search;
