@@ -133,8 +133,13 @@ static bool stream_handle(int ch, AppState& state) {
 bool InputHandler::handle(int ch, AppState& state) {
     if (ch == ERR) return false;
 
+    // Modal overlays take priority regardless of UI mode so TimerPrompt,
+    // QueueView and ShareMenu are reachable in streamlined mode too.
+    if (state.focus == Panel::TimerPrompt) { handle_timer_prompt(ch, state); return false; }
+    if (state.focus == Panel::QueueView)   { handle_queue_view(ch, state);   return false; }
+    if (state.focus == Panel::ShareMenu)   { state.show_share = false; state.focus = Panel::Results; return false; }
+
     // Narrow-terminal streamlined UI has its own, simpler navigation.
-    if (state.ui_mode == 1) return stream_handle(ch, state);
 
     // ── Mouse ────────────────────────────────────────────────────────────────
     if (ch == KEY_MOUSE) {
@@ -172,6 +177,16 @@ bool InputHandler::handle(int ch, AppState& state) {
         if (!(ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED))) return false;
 
         int my = ev.y, mx = ev.x;
+
+        // Back button: top-left " < " at row 0, columns 0-2
+        if (my == 0 && mx <= 2
+            && state.focus != Panel::Search && state.focus != Panel::Results
+            && state.focus != Panel::Tabs) {
+            // Treat as Escape: go back to previous panel
+            state.focus = Panel::Results;
+            state.actions_visible = false;
+            return false;
+        }
 
         // Search / hamburger row (rows 1-3)
         if (my >= 1 && my <= 3) {

@@ -429,6 +429,9 @@ void TUI::render(const AppState& state, const Library* lib) {
         // drawn inside the streamlined Playing screen itself.)
         if (state.show_shortcuts) draw_shortcuts(state);
         if (state.show_settings)  draw_settings(state);
+        if (state.show_timer_prompt || state.focus == Panel::TimerPrompt) draw_timer_prompt(state);
+        if (state.show_queue || state.focus == Panel::QueueView)          draw_queue_view(state);
+        if (state.show_share  || state.focus == Panel::ShareMenu)         draw_share_menu(state);
         refresh();
         flush_graphics();
         return;
@@ -532,6 +535,16 @@ void TUI::flush_graphics() {
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 void TUI::draw_header(const AppState& state) {
+    // Back button at top-left: Tab skips it, mouse-clickable (see input.cpp).
+    // Only shown when there is something to go back to.
+    bool show_back = (state.focus != Panel::Search && state.focus != Panel::Results
+                   && state.focus != Panel::Tabs);
+    if (show_back && state.term_w > 4) {
+        attron(COLOR_PAIR(Color::BORDER));
+        mvprintw(0, 0, " < ");
+        attroff(COLOR_PAIR(Color::BORDER));
+    }
+
     const char* t = "Search YouTube";
     int tlen = (int)strlen(t);
     int x = std::max(0, (state.term_w - tlen) / 2);
@@ -1650,18 +1663,34 @@ void TUI::draw_settings(const AppState& state) {
     mvprintw(py, px + (pw - 10) / 2, " Settings ");
     attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
 
-    // Tab bar  (5 tabs)
-    static const char* const kSettingsTabs[] = {"Theme","Accelerators","General","Timer","About"};
+    // Tab bar  (5 tabs). On narrow panels use a compact single-line form.
+    static const char* const kSettingsTabs[]      = {"Theme","Accelerators","General","Timer","About"};
+    static const char* const kSettingsTabsShort[] = {"Thm",  "Keys",        "Gen",    "Tmr",  "Abt"};
     static const int kNSettingsTabs = 5;
-    int tx = px + 2;
-    for (int t = 0; t < kNSettingsTabs; t++) {
-        bool active = (state.settings_tab == t);
-        if (active) attron(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
-        else        attron(COLOR_PAIR(Color::STATS));
-        mvprintw(py + 1, tx, " %s ", kSettingsTabs[t]);
-        if (active) attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
-        else        attroff(COLOR_PAIR(Color::STATS));
-        tx += (int)strlen(kSettingsTabs[t]) + 3;
+    if (pw >= 48) {
+        // Full tab bar
+        int tx = px + 2;
+        for (int t = 0; t < kNSettingsTabs; t++) {
+            bool active = (state.settings_tab == t);
+            if (active) attron(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
+            else        attron(COLOR_PAIR(Color::STATS));
+            mvprintw(py + 1, tx, " %s ", kSettingsTabs[t]);
+            if (active) attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
+            else        attroff(COLOR_PAIR(Color::STATS));
+            tx += (int)strlen(kSettingsTabs[t]) + 3;
+        }
+    } else {
+        // Compact: short tab names, fit in pw
+        int tx = px + 1;
+        for (int t = 0; t < kNSettingsTabs && tx + 5 < px + pw - 1; t++) {
+            bool active = (state.settings_tab == t);
+            if (active) attron(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
+            else        attron(COLOR_PAIR(Color::STATS));
+            mvprintw(py + 1, tx, " %s ", kSettingsTabsShort[t]);
+            if (active) attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
+            else        attroff(COLOR_PAIR(Color::STATS));
+            tx += (int)strlen(kSettingsTabsShort[t]) + 3;
+        }
     }
 
     int list_top = py + 3;
@@ -1724,14 +1753,16 @@ void TUI::draw_settings(const AppState& state) {
         }
 
     } else if (state.settings_tab == 2) {
-        // ── General tab: backend + UI mode + SponsorBlock ────────────────────
+        // ── General tab: backend, UI mode, SponsorBlock, resume, playlist, loop ─
         struct Row { std::string label; std::string value; };
         Row rows[] = {
-            { "Backend",      state.active_backend == BackendKind::YtcuiDl
-                              ? "ytcui-dl  (native)" : "yt-dlp" },
-            { "UI mode",      state.ui_mode == 0 ? "normal"
-                            : state.ui_mode == 1 ? "streamlined" : "minimal" },
-            { "SponsorBlock", state.sponsorblock_enabled ? "on" : "off" },
+            { "Backend",           state.active_backend == BackendKind::YtcuiDl
+                                   ? "ytcui-dl  (native)" : "yt-dlp" },
+            { "UI mode",           state.config_mode },
+            { "SponsorBlock",      state.sponsorblock_enabled ? "on" : "off" },
+            { "Resume playback",   state.resume_playback ? "on" : "off" },
+            { "Loop playlist",     state.loop_playlist   ? "on" : "off" },
+            { "Streamlined loop",  state.streamlined_loop ? "on" : "off" },
         };
         int nrows = (int)(sizeof(rows)/sizeof(rows[0]));
         int sel = state.settings_sel;
@@ -1739,7 +1770,6 @@ void TUI::draw_settings(const AppState& state) {
             int y = list_top + i;
             bool cur = (i == sel);
             std::string rowtext = rows[i].label;
-            // dots fill to column 20, then value
             while ((int)rowtext.size() < 20) rowtext += '.';
             rowtext += "  " + rows[i].value;
             if (cur) { paint_sel_bar(y, px+1, pw-2); attron(sel_attr()); }
@@ -1749,7 +1779,7 @@ void TUI::draw_settings(const AppState& state) {
         }
         attron(COLOR_PAIR(Color::BG) | A_DIM);
         mvprintw(list_top + nrows + 1, px + 2, "%s",
-            utf8_truncate("Enter: cycle value   Ctrl-B: backend  Ctrl-S/q: close", pw-4).c_str());
+            utf8_truncate("Enter: cycle/toggle  Ctrl-B: backend  Ctrl-S/q: close", pw-4).c_str());
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
 
     } else if (state.settings_tab == 3) {
@@ -2098,6 +2128,11 @@ void TUI::stream_playing(const AppState& state) {
         const char* next = uni ? "▶▶" : ">>";
         center_text(y, W, std::string(prev) + "     " + mid + "     " + next,
                     COLOR_PAIR(Color::ACCENT) | A_BOLD);
+        y++;
+    }
+    // Timer countdown — shown prominently in the playing screen when active
+    if (!state.timer_status.empty() && y < H - 1) {
+        center_text(y, W, "⏱ " + state.timer_status, COLOR_PAIR(Color::TAG) | A_DIM);
     }
     center_text(H - 1, W, "space·+/-·</>·Ctrl-S·b·q", COLOR_PAIR(Color::BG) | A_DIM);
 }

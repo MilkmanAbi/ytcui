@@ -76,6 +76,7 @@ struct Config {
         int bottom     = 'G';
         int sort       = 's';
         int new_playlist = 'n';
+        int timer      = 0x14;   // Ctrl-T
     } keys;
 
     // Human-readable name for a key code (inverse of the installer's parser).
@@ -112,10 +113,16 @@ struct Config {
     // With loop on the item never ends, so the queue waits.
     bool loop_video = false;
 
+    // When true and in streamlined mode, always loop (overrides loop_video).
+    bool streamlined_loop = true;
+
     // What happens when a video ends and the queue is empty.
     //   "off"  — stop, as v4 did
     //   "list" — play the next item in whatever list is visible
     std::string autoplay = "list";
+
+    // Advance to next item in playlist when current ends (requires autoplay="list").
+    bool loop_playlist = true;
 
     // Arm a sleep timer at launch, in seconds. 0 = none.
     int sleep_seconds = 0;

@@ -126,6 +126,7 @@ struct AppState {
     bool is_playing = false;
     bool is_paused  = false;
     std::string now_playing;
+    std::string now_playing_id;  // video ID of current track (empty if unknown)
     PlayMode play_mode = PlayMode::Video;
 
     // Playback progress (updated from mpv IPC every render cycle)
@@ -225,6 +226,12 @@ struct AppState {
     // SponsorBlock status line ("2 segments · 1:47 skippable" or "")
     std::string sponsorblock_summary;
     bool sponsorblock_enabled = true;   // mirrors config_.sponsorblock for the settings UI
+
+    // Mirrors of config fields for the settings General tab
+    std::string config_mode        = "auto";  // config_.mode ("auto"/"normal"/"streamlined")
+    bool resume_playback           = true;    // mirrors config_.resume_playback
+    bool loop_playlist             = true;    // mirrors config_.loop_playlist
+    bool streamlined_loop          = true;    // mirrors config_.streamlined_loop
 
     // Watch progress (0..1) for the selected result, for a pip in the row
     double selected_progress = 0.0;

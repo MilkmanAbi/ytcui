@@ -12,6 +12,7 @@
 #include "core/watchstate.h"
 #include "core/sponsorblock.h"
 #include <atomic>
+#include <chrono>
 #include <mutex>
 
 namespace ytui {
@@ -46,8 +47,10 @@ private:
     ytcui::sb::Segments     sb_segs_;
     std::mutex              sb_mutex_;
     std::atomic<bool>       sb_fetching_{false};
-    // video_id of the currently-loaded SB data (or empty if none)
-    std::string             sb_video_id_;
+    std::string             sb_video_id_;  // video_id of currently-loaded SB data
+    std::chrono::steady_clock::time_point sb_last_seek_{};  // seek-storm latch
+
+    bool user_stopped_ = false;  // true when the user explicitly stopped playback
 
     void build_actions();
     void build_playlist_actions();
@@ -81,6 +84,8 @@ private:
     void show_share_menu(const std::string& url);
     void switch_backend(BackendKind k);
     void tick_timer();              // called each frame; pauses mpv when due
+    void start_play(const Video& v, PlayMode mode);     // single entry for all playback starts
+    void sync_mode_transition(int from, int to);         // called when ui_mode changes
     void start_sb_fetch(const std::string& video_id);  // launch background fetch
     void tick_sponsorblock();       // called each frame; checks skip and updates summary
 };

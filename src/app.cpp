@@ -7,6 +7,7 @@
 #include "compat.h"
 #include "core/url.h"
 #include "core/share.h"
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <sstream>
@@ -41,12 +42,21 @@ static const AccelRow kAccelRows[] = {
     {"Sort menu",        &Config::KeyBindings::sort},
     {"New playlist",     &Config::KeyBindings::new_playlist},
     {"Quit",             &Config::KeyBindings::quit},
+    {"Sleep timer",      &Config::KeyBindings::timer},
 };
 static const int kAccelCount = (int)(sizeof(kAccelRows)/sizeof(kAccelRows[0]));
 
 
 static inline void shell(const std::string& cmd) {
     int r = system(cmd.c_str()); (void)r;
+}
+
+static Video entry_to_video(const VideoEntry& e) {
+    Video v;
+    v.id = e.id; v.title = e.title; v.channel = e.channel;
+    v.channel_id = e.channel_id; v.thumbnail_url = e.thumbnail_url;
+    v.duration_seconds = e.duration_seconds;
+    return v;
 }
 
 static const char* greetings[] = {
@@ -420,6 +430,7 @@ int App::run() {
 
     bool was_playing = false;
     std::string sb_loaded_for;  // video_id for which SB was last requested
+    int prev_ui_mode = -1;
 
     while (state_.running) {
         tui_.get_dimensions(state_.term_w, state_.term_h);
@@ -449,11 +460,11 @@ int App::run() {
             // Kick off a SB fetch whenever a NEW video starts (or a fresh play
             // after the last one ended). Compare against the video_id we already
             // fetched so we don't re-fetch on resume-from-pause.
-            if (just_started || (state_.is_playing && !state_.now_playing.empty()
-                                  && state_.now_playing != sb_loaded_for)) {
-                if (state_.now_playing != sb_loaded_for) {
-                    sb_loaded_for = state_.now_playing;
-                    start_sb_fetch(state_.now_playing);
+            if (just_started || (state_.is_playing && !state_.now_playing_id.empty()
+                                  && state_.now_playing_id != sb_loaded_for)) {
+                if (state_.now_playing_id != sb_loaded_for) {
+                    sb_loaded_for = state_.now_playing_id;
+                    start_sb_fetch(state_.now_playing_id);
                 }
             }
         }
@@ -466,10 +477,20 @@ int App::run() {
         // music-player layout when the terminal is RELIABLY very narrow: a
         // positive, sane width below the threshold. Terminals that can't report
         // a size fall back to 80 cols (or $COLUMNS), so they stay in normal mode.
-        constexpr int STREAM_MAX_W = 48;   // "WAAAY too narrow" cutoff
+        constexpr int STREAM_MAX_W = 48;   // enter streamlined below this
+        constexpr int STREAM_EXIT_W = 52;  // exit streamlined at or above this (hysteresis)
         if (config_.mode == "streamlined")      state_.ui_mode = 1;
         else if (config_.mode == "normal")      state_.ui_mode = 0;
-        else /* auto */ state_.ui_mode = (state_.term_w > 4 && state_.term_w < STREAM_MAX_W) ? 1 : 0;
+        else /* auto */ {
+            bool narrow = (state_.term_w > 4 && state_.term_w < STREAM_MAX_W);
+            bool wide   = (state_.term_w >= STREAM_EXIT_W);
+            if      (narrow) state_.ui_mode = 1;
+            else if (wide)   state_.ui_mode = 0;
+            // hysteresis zone [48,51]: keep current mode, avoid thrash
+        }
+        if (prev_ui_mode != -1 && prev_ui_mode != state_.ui_mode)
+            sync_mode_transition(prev_ui_mode, state_.ui_mode);
+        prev_ui_mode = state_.ui_mode;
 
         // ── Clamp playlist indices before render ──────────────────────────────
         if (!state_.current_playlist_id.empty()) {
@@ -510,6 +531,10 @@ int App::run() {
         // Keep settings-display fields in sync whether or not the panel is open,
         // so the General tab shows live values even before first open.
         state_.sponsorblock_enabled = config_.sponsorblock;
+        state_.config_mode          = config_.mode;
+        state_.resume_playback      = config_.resume_playback;
+        state_.loop_playlist        = config_.loop_playlist;
+        state_.streamlined_loop     = config_.streamlined_loop;
         if (state_.show_settings) {
             state_.settings_theme_names.assign(kThemeNames, kThemeNames + kThemeCount);
             state_.settings_accel_labels.clear();
@@ -556,8 +581,8 @@ int App::run() {
             // input_.handle already dispatches it via handle_timer_prompt().
         }
 
-        // Ctrl-T: sleep timer prompt
-        if (ch == 0x14 && !state_.show_timer_prompt) {
+        // Sleep timer prompt (default Ctrl-T, rebindable in Settings → Accelerators)
+        if (ch == config_.keys.timer && !state_.show_timer_prompt) {
             handle_timer_key();
             continue;
         }
@@ -618,7 +643,7 @@ int App::run() {
                 queue_.remove((std::size_t)state_.queue_sel);
                 sync_queue_display();
                 player_.stop();
-                player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Audio);
+                start_play(v, PlayMode::Audio);
                 state_.status_message = "Playing: " + v.title;
                 state_.show_queue = false;
                 state_.focus = Panel::Results;
@@ -1034,7 +1059,7 @@ void App::execute_action(Action action) {
             state_.status_message = "Loading video... (~_~)";
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Video);
+            start_play(v, PlayMode::Video);
             state_.status_message = "Playing: " + v.title;
             return;
         }
@@ -1042,7 +1067,7 @@ void App::execute_action(Action action) {
             state_.status_message = "Loading audio... (~_~)";
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Audio);
+            start_play(v, PlayMode::Audio);
             state_.status_message = "Playing audio: " + v.title;
             return;
         }
@@ -1050,7 +1075,7 @@ void App::execute_action(Action action) {
             state_.status_message = "Loading loop... (~_~)";
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::AudioLoop);
+            start_play(v, PlayMode::AudioLoop);
             state_.status_message = "Looping: " + v.title;
             return;
         }
@@ -1147,7 +1172,7 @@ void App::execute_playlist_action(Action action) {
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id,
                                     v.thumbnail_url, v.duration_seconds);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Video);
+            start_play(entry_to_video(v), PlayMode::Video);
             state_.status_message = "Playing: " + v.title;
             return;
         }
@@ -1156,7 +1181,7 @@ void App::execute_playlist_action(Action action) {
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id,
                                     v.thumbnail_url, v.duration_seconds);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Audio);
+            start_play(entry_to_video(v), PlayMode::Audio);
             state_.status_message = "Playing audio: " + v.title;
             return;
         }
@@ -1165,7 +1190,7 @@ void App::execute_playlist_action(Action action) {
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id,
                                     v.thumbnail_url, v.duration_seconds);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::AudioLoop);
+            start_play(entry_to_video(v), PlayMode::AudioLoop);
             state_.status_message = "Looping: " + v.title;
             return;
         }
@@ -1396,7 +1421,7 @@ void App::handle_settings_key(int ch) {
         case KEY_DOWN: case 'j': {
             int n = (state_.settings_tab == 0) ? kThemeCount
                   : (state_.settings_tab == 1) ? kAccelCount
-                  : (state_.settings_tab == 2) ? 3   // backend + mode + sb
+                  : (state_.settings_tab == 2) ? 6   // backend + mode + sb + resume + playlist + streamlined
                   : (state_.settings_tab == 3) ? 2   // timer + loop
                   : 0;                                 // about: display only
             if (state_.settings_sel < n - 1) state_.settings_sel++;
@@ -1447,11 +1472,10 @@ void App::handle_settings_key(int ch) {
                                        ? BackendKind::YtDlp : BackendKind::YtcuiDl;
                     switch_backend(next);
                 } else if (state_.settings_sel == 1) {
-                    // UI mode: cycle normal → streamlined → minimal → normal
-                    int next = (state_.ui_mode + 1) % 3;
-                    state_.ui_mode = next;
-                    config_.mode = (next == 0) ? "normal"
-                                 : (next == 1) ? "streamlined" : "minimal";
+                    // UI mode: cycle auto → normal → streamlined
+                    if (config_.mode == "auto")          config_.mode = "normal";
+                    else if (config_.mode == "normal")   config_.mode = "streamlined";
+                    else                                 config_.mode = "auto";
                     config_.save();
                     state_.settings_toast = "mode: " + config_.mode;
                 } else if (state_.settings_sel == 2) {
@@ -1461,6 +1485,24 @@ void App::handle_settings_key(int ch) {
                     config_.save();
                     state_.settings_toast = std::string("SponsorBlock: ")
                                           + (config_.sponsorblock ? "on" : "off");
+                } else if (state_.settings_sel == 3) {
+                    // Resume playback toggle
+                    config_.resume_playback = !config_.resume_playback;
+                    config_.save();
+                    state_.settings_toast = std::string("Resume: ")
+                                          + (config_.resume_playback ? "on" : "off");
+                } else if (state_.settings_sel == 4) {
+                    // Loop playlist toggle
+                    config_.loop_playlist = !config_.loop_playlist;
+                    config_.save();
+                    state_.settings_toast = std::string("Loop playlist: ")
+                                          + (config_.loop_playlist ? "on" : "off");
+                } else if (state_.settings_sel == 5) {
+                    // Streamlined loop toggle
+                    config_.streamlined_loop = !config_.streamlined_loop;
+                    config_.save();
+                    state_.settings_toast = std::string("Streamlined loop: ")
+                                          + (config_.streamlined_loop ? "on" : "off");
                 }
             } else if (state_.settings_tab == 3) {
                 if (state_.settings_sel == 0) {
@@ -1500,14 +1542,22 @@ void App::tick_timer() {
 void App::on_video_end() {
     // Record the finished video in watch state
     if (!state_.now_playing.empty())
-        watch_state_.record("", state_.now_playing, "", 0, 0, /*finished=*/true);
+        watch_state_.record(state_.now_playing_id, state_.now_playing, "", 0, 0, /*finished=*/true);
+
+    // Streamlined mode always loops by default (unless config overrides it).
+    bool effective_loop = state_.loop_enabled
+                       || (config_.streamlined_loop && state_.ui_mode == 1);
 
     // Loop: replay the same video if loop is enabled and no queue entry follows
-    if (state_.loop_enabled && queue_.empty()) {
-        if (!state_.results.empty() && state_.selected_result < (int)state_.results.size()) {
-            const auto& v = state_.results[state_.selected_result];
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Audio);
-            state_.status_message = "Looping: " + v.title;
+    if (effective_loop && queue_.empty()) {
+        const Video* target = nullptr;
+        if (!state_.results.empty() && state_.selected_result < (int)state_.results.size())
+            target = &state_.results[state_.selected_result];
+        else if (!state_.stream_now.empty())
+            target = &state_.stream_now;
+        if (target) {
+            start_play(*target, PlayMode::Audio);
+            state_.status_message = "Looping: " + target->title;
         }
         return;
     }
@@ -1516,7 +1566,7 @@ void App::on_video_end() {
     if (!queue_.empty()) {
         Video next = queue_.take();
         sync_queue_display();
-        player_.play("https://www.youtube.com/watch?v=" + next.id, next.title, PlayMode::Audio);
+        start_play(next, PlayMode::Audio);
         state_.status_message = "Playing next: " + next.title;
     }
 }
@@ -1572,6 +1622,33 @@ void App::switch_backend(BackendKind k) {
     Log::write("Backend switched to %s", name);
 }
 
+void App::start_play(const Video& v, PlayMode mode) {
+    state_.now_playing_id = v.id;
+    state_.stream_now     = v;
+    user_stopped_         = false;
+    {
+        std::lock_guard<std::mutex> lk(sb_mutex_);
+        sb_segs_     = {};
+        sb_video_id_.clear();
+    }
+    sb_last_seek_ = {};
+    player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, mode);
+}
+
+void App::sync_mode_transition(int from, int to) {
+    if (from == 0 && to == 1) {
+        // normal → streamlined: route to the most relevant screen
+        if (state_.is_playing)
+            state_.stream_screen = (int)StreamScreen::Playing;
+        else if (!state_.results.empty()) {
+            state_.stream_screen  = (int)StreamScreen::Browse;
+            state_.stream_section = "Results";
+        } else
+            state_.stream_screen = (int)StreamScreen::Menu;
+    }
+    // streamlined → normal: no-op; normal-mode state is fully preserved
+}
+
 void App::start_sb_fetch(const std::string& video_id) {
     if (!config_.sponsorblock)  return;
     if (video_id.empty())       return;
@@ -1614,8 +1691,13 @@ void App::tick_sponsorblock() {
         target = sb_segs_.skip_target(pos);
     }
     if (target >= 0) {
-        player_.seek_to(target);
-        Log::write("SponsorBlock skip: %.1f -> %.1f", pos, target);
+        auto now  = std::chrono::steady_clock::now();
+        auto ms   = std::chrono::duration_cast<std::chrono::milliseconds>(now - sb_last_seek_).count();
+        if (ms > 1500) {
+            player_.seek_to(target);
+            sb_last_seek_ = now;
+            Log::write("SponsorBlock skip: %.1f -> %.1f", pos, target);
+        }
     }
 }
 
