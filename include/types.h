@@ -223,6 +223,9 @@ struct AppState {
     int  queue_sel  = 0;
     std::vector<Video> queue_items;   // snapshot from App::queue_ for rendering
 
+    // Bottom status/now-playing bar visibility (mirrors config_.show_status_bar)
+    bool show_status_bar = true;
+
     // SponsorBlock status line ("2 segments · 1:47 skippable" or "")
     std::string sponsorblock_summary;
     bool sponsorblock_enabled = true;   // mirrors config_.sponsorblock for the settings UI

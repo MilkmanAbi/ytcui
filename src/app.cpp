@@ -535,6 +535,7 @@ int App::run() {
         state_.resume_playback      = config_.resume_playback;
         state_.loop_playlist        = config_.loop_playlist;
         state_.streamlined_loop     = config_.streamlined_loop;
+        state_.show_status_bar      = config_.show_status_bar;
         if (state_.show_settings) {
             state_.settings_theme_names.assign(kThemeNames, kThemeNames + kThemeCount);
             state_.settings_accel_labels.clear();
@@ -1446,7 +1447,7 @@ void App::handle_settings_key(int ch) {
         case KEY_DOWN: case 'j': {
             int n = (state_.settings_tab == 0) ? kThemeCount
                   : (state_.settings_tab == 1) ? kAccelCount
-                  : (state_.settings_tab == 2) ? 6   // backend + mode + sb + resume + playlist + streamlined
+                  : (state_.settings_tab == 2) ? 7   // backend/mode/sb/resume/playlist/streamlined/statusbar
                   : (state_.settings_tab == 3) ? 2   // timer + loop
                   : 0;                                 // about: display only
             if (state_.settings_sel < n - 1) state_.settings_sel++;
@@ -1454,7 +1455,6 @@ void App::handle_settings_key(int ch) {
         }
 
         case KEY_MOUSE: {
-            // Click on a settings tab label to switch to it.
             MEVENT ev;
             if (getmouse(&ev) != OK) return;
             if (!(ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED))) return;
@@ -1462,17 +1462,41 @@ void App::handle_settings_key(int ch) {
             int ph = 22; if (ph > state_.term_h - 2) ph = state_.term_h - 2;
             int px = std::max(0, (state_.term_w - pw) / 2);
             int py = std::max(0, (state_.term_h - ph) / 2);
-            if (ev.y != py + 1) return;  // only the tab bar row
-            static const char* tabs[] = {"Theme","Accelerators","General","Timer","About"};
-            int tx = px + 2;
-            for (int t = 0; t < 5; t++) {
-                int tw = (int)strlen(tabs[t]) + 3;
-                if (ev.x >= tx && ev.x < tx + tw) {
-                    state_.settings_tab = t;
-                    state_.settings_sel = 0;
-                    return;
+            int list_top  = py + 3;
+            int list_rows = ph - 5;
+
+            // Click on a settings tab label to switch to it.
+            if (ev.y == py + 1) {
+                static const char* tabs[] = {"Theme","Accelerators","General","Timer","About"};
+                int tx = px + 2;
+                for (int t = 0; t < 5; t++) {
+                    int tw = (int)strlen(tabs[t]) + 3;
+                    if (ev.x >= tx && ev.x < tx + tw) {
+                        state_.settings_tab = t;
+                        state_.settings_sel = 0;
+                        return;
+                    }
+                    tx += tw;
                 }
-                tx += tw;
+                return;
+            }
+
+            // Click on a list item within the panel.
+            if (ev.y >= list_top && ev.y < list_top + list_rows &&
+                ev.x >= px + 1 && ev.x < px + pw - 1) {
+                int n = (state_.settings_tab == 0) ? kThemeCount
+                      : (state_.settings_tab == 1) ? kAccelCount
+                      : (state_.settings_tab == 2) ? 7
+                      : (state_.settings_tab == 3) ? 2
+                      : 0;
+                if (n == 0) return;
+                int first = (state_.settings_sel >= list_rows)
+                            ? state_.settings_sel - list_rows + 1 : 0;
+                int idx = first + (ev.y - list_top);
+                if (idx >= 0 && idx < n) {
+                    state_.settings_sel = idx;
+                    handle_settings_key('\n');  // apply selection
+                }
             }
             return;
         }
@@ -1528,6 +1552,13 @@ void App::handle_settings_key(int ch) {
                     config_.save();
                     state_.settings_toast = std::string("Streamlined loop: ")
                                           + (config_.streamlined_loop ? "on" : "off");
+                } else if (state_.settings_sel == 6) {
+                    // Status bar toggle
+                    config_.show_status_bar = !config_.show_status_bar;
+                    state_.show_status_bar  = config_.show_status_bar;
+                    config_.save();
+                    state_.settings_toast = std::string("Status bar: ")
+                                          + (config_.show_status_bar ? "on" : "off");
                 }
             } else if (state_.settings_tab == 3) {
                 if (state_.settings_sel == 0) {

@@ -7,7 +7,7 @@ namespace ytui {
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 static int calc_max_visible(const AppState& s) {
-    int start_y = 6, end_y = s.term_h - 4;
+    int start_y = 6, end_y = s.term_h - (s.show_status_bar ? 4 : 1);
     return std::max(1, end_y - start_y - 1);
 }
 
@@ -237,7 +237,7 @@ bool InputHandler::handle(int ch, AppState& state) {
         }
 
         // Main content area
-        int start_y = 6, end_y = state.term_h - 4;
+        int start_y = 6, end_y = state.term_h - (state.show_status_bar ? 4 : 1);
         if (my <= start_y || my >= end_y) return false;
 
         // Playlist list tab
@@ -247,6 +247,9 @@ bool InputHandler::handle(int ch, AppState& state) {
             if (row_idx >= 0) {
                 state.selected_playlist = row_idx + state.playlist_scroll;
                 state.focus = Panel::PlaylistList;
+                // Click on the color dot column (x 2-3) cycles the tag color.
+                if (mx <= 3)
+                    state.status_message = "__PLAYLIST_TAG__";
             }
             return false;
         }
@@ -706,6 +709,34 @@ void InputHandler::handle_sort_menu(int ch, AppState& state) {
         case 27:
             state.focus = state.results.empty() ? Panel::Search : Panel::Results;
             break;
+        case KEY_MOUSE: {
+            MEVENT ev;
+            if (getmouse(&ev) != OK) break;
+            if (!(ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED))) break;
+            int pw   = std::min(56, state.term_w - 4);
+            int ph   = 10;
+            int px   = std::max(0, (state.term_w - pw) / 2);
+            int py   = std::max(0, (state.term_h - ph) / 2);
+            int half = pw / 2;
+            if (ev.y < py + 2 || ev.y > py + ph - 2) break;
+            int row = ev.y - (py + 2);
+            if (ev.x >= px && ev.x < px + half) {
+                // Sort column (4 items)
+                if (row >= 0 && row < 4) {
+                    state.sort_col = 0; state.sort_row = row;
+                    state.status_message = "__SORT_APPLIED__";
+                    state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+                }
+            } else if (ev.x >= px + half && ev.x < px + pw) {
+                // Filter column (6 items)
+                if (row >= 0 && row < 6) {
+                    state.sort_col = 1; state.sort_row = row;
+                    state.status_message = "__SORT_APPLIED__";
+                    state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+                }
+            }
+            break;
+        }
     }
 }
 

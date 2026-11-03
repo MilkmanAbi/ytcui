@@ -461,7 +461,7 @@ void TUI::render(const AppState& state, const Library* lib) {
         draw_home_panels(state, lib);
     }
 
-    draw_message_bar(state);
+    if (state.show_status_bar) draw_message_bar(state);
 
     if (state.focus == Panel::BrowserPick)  draw_browser_popup(state);
     if (state.focus == Panel::SortMenu)     draw_sort_menu(state);
@@ -616,7 +616,7 @@ void TUI::draw_tabs(const AppState& state) {
 
 // ─── Home panels (Library / Feed / History tabs) ─────────────────────────────
 void TUI::draw_home_panels(const AppState& state, const Library* lib) {
-    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - (state.show_status_bar ? 4 : 1), ah = ey - sy;
     if (ah < 3 || state.term_w < 4) return;
     int lw = std::max(10, state.term_w * 50 / 100);
     int rw = state.term_w - lw;
@@ -826,7 +826,7 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
 
 // ─── Results panel ────────────────────────────────────────────────────────────
 void TUI::draw_results_panel(const AppState& state) {
-    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - (state.show_status_bar ? 4 : 1), ah = ey - sy;
     if (ah < 3 || state.term_w < 4) return;
 
     int lw = state.term_w * 60 / 100;
@@ -892,7 +892,7 @@ void TUI::draw_results_panel(const AppState& state) {
 // ─── Actions panel ────────────────────────────────────────────────────────────
 void TUI::draw_actions_panel(const AppState& state) {
     if (state.results.empty()) return;
-    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - (state.show_status_bar ? 4 : 1), ah = ey - sy;
     if (ah < 3 || state.term_w < 4) return;
 
     int lw = state.term_w * 30 / 100;
@@ -1260,7 +1260,7 @@ void TUI::draw_box(int y, int x, int h, int w, int cp) {
 
 // ─── Playlists tab — list of all playlists ────────────────────────────────────
 void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
-    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - (state.show_status_bar ? 4 : 1), ah = ey - sy;
     if (ah < 3 || state.term_w < 4 || !lib) return;
 
     const auto& pls = lib->playlists();
@@ -1362,7 +1362,7 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
 
 // ─── Playlist view — video list inside a playlist ────────────────────────────
 void TUI::draw_playlist_view(const AppState& state, const Library* lib) {
-    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - (state.show_status_bar ? 4 : 1), ah = ey - sy;
     if (ah < 3 || state.term_w < 4 || !lib) return;
 
     const Playlist* pl = lib->get_playlist(state.current_playlist_id);
@@ -1464,7 +1464,7 @@ void TUI::draw_playlist_actions_panel(const AppState& state, const Library* lib)
     const Playlist* pl = lib->get_playlist(state.current_playlist_id);
     if (!pl || pl->videos.empty()) return;
 
-    int sy = 6, ey = state.term_h - 4, ah = ey - sy;
+    int sy = 6, ey = state.term_h - (state.show_status_bar ? 4 : 1), ah = ey - sy;
     if (ah < 3 || state.term_w < 4) return;
 
     int lw = state.term_w * 30 / 100;
@@ -1767,6 +1767,7 @@ void TUI::draw_settings(const AppState& state) {
             { "Resume playback",   state.resume_playback ? "on" : "off" },
             { "Loop playlist",     state.loop_playlist   ? "on" : "off" },
             { "Streamlined loop",  state.streamlined_loop ? "on" : "off" },
+            { "Status bar",        state.show_status_bar ? "on" : "off" },
         };
         int nrows = (int)(sizeof(rows)/sizeof(rows[0]));
         int sel = state.settings_sel;
@@ -1871,6 +1872,7 @@ void TUI::draw_shortcuts(const AppState& state) {
         // actions
         {"s",         "sort menu"},
         {"n",         "new playlist (in playlist view)"},
+        {"c",         "cycle playlist color tag (in playlists)"},
         {"q",         "quit"},
         {"?",         "this panel"},
     };

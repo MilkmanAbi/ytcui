@@ -127,6 +127,9 @@ struct Config {
     // Arm a sleep timer at launch, in seconds. 0 = none.
     int sleep_seconds = 0;
 
+    // Show the bottom status/now-playing bar. Off = minimalist look.
+    bool show_status_bar = true;
+
     // SponsorBlock. On by default; off means no request is made at all.
     // The lookup uses the hash-prefix endpoint so only 4 hex chars of
     // sha256(videoID) leave the machine — ~128 videos per bucket.
