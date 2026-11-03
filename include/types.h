@@ -225,6 +225,8 @@ struct AppState {
 
     // Bottom status/now-playing bar visibility (mirrors config_.show_status_bar)
     bool show_status_bar = true;
+    // Hint bar visibility — j/k hints etc. (mirrors config_.show_hints)
+    bool show_hints = true;
 
     // SponsorBlock status line ("2 segments · 1:47 skippable" or "")
     std::string sponsorblock_summary;

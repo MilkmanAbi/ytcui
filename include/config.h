@@ -129,6 +129,8 @@ struct Config {
 
     // Show the bottom status/now-playing bar. Off = minimalist look.
     bool show_status_bar = true;
+    // Show hint bars (j/k=navigate etc.) throughout the UI. Off = cleaner look.
+    bool show_hints = true;
 
     // SponsorBlock. On by default; off means no request is made at all.
     // The lookup uses the hash-prefix endpoint so only 4 hex chars of

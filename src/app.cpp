@@ -536,6 +536,7 @@ int App::run() {
         state_.loop_playlist        = config_.loop_playlist;
         state_.streamlined_loop     = config_.streamlined_loop;
         state_.show_status_bar      = config_.show_status_bar;
+        state_.show_hints           = config_.show_hints;
         if (state_.show_settings) {
             state_.settings_theme_names.assign(kThemeNames, kThemeNames + kThemeCount);
             state_.settings_accel_labels.clear();
@@ -1447,7 +1448,7 @@ void App::handle_settings_key(int ch) {
         case KEY_DOWN: case 'j': {
             int n = (state_.settings_tab == 0) ? kThemeCount
                   : (state_.settings_tab == 1) ? kAccelCount
-                  : (state_.settings_tab == 2) ? 7   // backend/mode/sb/resume/playlist/streamlined/statusbar
+                  : (state_.settings_tab == 2) ? 8   // backend/mode/sb/resume/playlist/streamlined/statusbar/hints
                   : (state_.settings_tab == 3) ? 2   // timer + loop
                   : 0;                                 // about: display only
             if (state_.settings_sel < n - 1) state_.settings_sel++;
@@ -1486,7 +1487,7 @@ void App::handle_settings_key(int ch) {
                 ev.x >= px + 1 && ev.x < px + pw - 1) {
                 int n = (state_.settings_tab == 0) ? kThemeCount
                       : (state_.settings_tab == 1) ? kAccelCount
-                      : (state_.settings_tab == 2) ? 7
+                      : (state_.settings_tab == 2) ? 8
                       : (state_.settings_tab == 3) ? 2
                       : 0;
                 if (n == 0) return;
@@ -1559,6 +1560,13 @@ void App::handle_settings_key(int ch) {
                     config_.save();
                     state_.settings_toast = std::string("Status bar: ")
                                           + (config_.show_status_bar ? "on" : "off");
+                } else if (state_.settings_sel == 7) {
+                    // Hints toggle
+                    config_.show_hints = !config_.show_hints;
+                    state_.show_hints  = config_.show_hints;
+                    config_.save();
+                    state_.settings_toast = std::string("Hints: ")
+                                          + (config_.show_hints ? "on" : "off");
                 }
             } else if (state_.settings_tab == 3) {
                 if (state_.settings_sel == 0) {

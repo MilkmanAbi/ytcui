@@ -727,7 +727,7 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
                 }
             }
             // Hint
-            if (ey - 1 > sy + 2) {
+            if (state.show_hints && ey - 1 > sy + 2) {
                 attron(COLOR_PAIR(Color::BG) | A_DIM);
                 mvprintw(ey - 1, 2, "j/k=navigate  Enter/click=search & go to results");
                 attroff(COLOR_PAIR(Color::BG) | A_DIM);
@@ -1353,7 +1353,7 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
     }
 
     // Hint bar
-    if (ey - 1 > sy + 2) {
+    if (state.show_hints && ey - 1 > sy + 2) {
         attron(COLOR_PAIR(Color::BG) | A_DIM);
         mvprintw(ey - 1, 2, "Enter=open  j/k=navigate  n=new  c=color");
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
@@ -1450,7 +1450,7 @@ void TUI::draw_playlist_view(const AppState& state, const Library* lib) {
             mvprintw(y++, x, "%d:%02d", v.duration_seconds / 60, v.duration_seconds % 60);
             attroff(COLOR_PAIR(Color::STATS));
         }
-        if (bot - 1 > y) {
+        if (state.show_hints && bot - 1 > y) {
             attron(COLOR_PAIR(Color::BG) | A_DIM);
             mvprintw(bot - 1, x, "%s", utf8_truncate("Enter=actions  Esc=back", w2).c_str());
             attroff(COLOR_PAIR(Color::BG) | A_DIM);
@@ -1768,6 +1768,7 @@ void TUI::draw_settings(const AppState& state) {
             { "Loop playlist",     state.loop_playlist   ? "on" : "off" },
             { "Streamlined loop",  state.streamlined_loop ? "on" : "off" },
             { "Status bar",        state.show_status_bar ? "on" : "off" },
+            { "Hints",             state.show_hints ? "on" : "off" },
         };
         int nrows = (int)(sizeof(rows)/sizeof(rows[0]));
         int sel = state.settings_sel;
@@ -1839,7 +1840,8 @@ void TUI::draw_settings(const AppState& state) {
         "Tab: switch   Ctrl-S/q: close",
     };
     int ti = std::clamp(state.settings_tab, 0, 4);
-    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(hints[ti], pw - 4).c_str());
+    if (state.show_hints)
+        mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(hints[ti], pw - 4).c_str());
     attroff(COLOR_PAIR(Color::STATS));
 }
 
@@ -1944,7 +1946,7 @@ void TUI::stream_menu(const AppState& state, const Library*) {
             attroff(COLOR_PAIR(Color::TITLE));
         }
     }
-    if (H - 2 > top + n)
+    if (state.show_hints && H - 2 > top + n)
         center_text(H - 2, W, "j/k · ⏎ open · q quit", COLOR_PAIR(Color::BG) | A_DIM);
     stream_status(state);
 }
@@ -1960,7 +1962,8 @@ void TUI::stream_search(const AppState& state) {
     mvprintw(by + 1, 3, "%s", q.c_str());
     attroff(COLOR_PAIR(Color::TITLE));
     mvchgat(by + 1, 3 + std::min(utf8_display_width(q), iw - 1), 1, A_REVERSE, 0, nullptr);
-    center_text(H - 2, W, "type · ⏎ search · esc back", COLOR_PAIR(Color::BG) | A_DIM);
+    if (state.show_hints)
+        center_text(H - 2, W, "type · ⏎ search · esc back", COLOR_PAIR(Color::BG) | A_DIM);
     stream_status(state);
 }
 
@@ -1988,7 +1991,8 @@ void TUI::stream_browse(const AppState& state) {
                     attroff(COLOR_PAIR(Color::TITLE)); }
             }
         }
-        center_text(H - 2, W, "⏎ open · esc back", COLOR_PAIR(Color::BG) | A_DIM);
+        if (state.show_hints)
+            center_text(H - 2, W, "⏎ open · esc back", COLOR_PAIR(Color::BG) | A_DIM);
         stream_status(state);
         return;
     }
@@ -2001,7 +2005,8 @@ void TUI::stream_browse(const AppState& state) {
                         : sec == "History"  ? "No history yet (._.)"
                         : "No results... try again? (>_<)";
         center_text(H / 2, W, msg, COLOR_PAIR(Color::BG) | A_DIM);
-        center_text(H - 2, W, "esc back", COLOR_PAIR(Color::BG) | A_DIM);
+        if (state.show_hints)
+            center_text(H - 2, W, "esc back", COLOR_PAIR(Color::BG) | A_DIM);
         stream_status(state);
         return;
     }
@@ -2034,7 +2039,8 @@ void TUI::stream_browse(const AppState& state) {
             attroff(COLOR_PAIR(Color::CHANNEL) | A_DIM);
         }
     }
-    center_text(H - 2, W, "⏎ play · esc back", COLOR_PAIR(Color::BG) | A_DIM);
+    if (state.show_hints)
+        center_text(H - 2, W, "⏎ play · esc back", COLOR_PAIR(Color::BG) | A_DIM);
     stream_status(state);
 }
 
@@ -2068,7 +2074,8 @@ void TUI::stream_actions(const AppState& state) {
             attron(COLOR_PAIR(Color::TITLE)); mvprintw(ry, x, "%s", lab.c_str()); attroff(COLOR_PAIR(Color::TITLE));
         }
     }
-    center_text(H - 2, W, "j/k · ⏎ select · esc back", COLOR_PAIR(Color::BG) | A_DIM);
+    if (state.show_hints)
+        center_text(H - 2, W, "j/k · ⏎ select · esc back", COLOR_PAIR(Color::BG) | A_DIM);
     stream_status(state);
 }
 
@@ -2142,7 +2149,8 @@ void TUI::stream_playing(const AppState& state) {
     if (!state.timer_status.empty() && y < H - 1) {
         center_text(y, W, "⏱ " + state.timer_status, COLOR_PAIR(Color::TAG) | A_DIM);
     }
-    center_text(H - 1, W, "space·+/-·</>·Ctrl-S·b·q", COLOR_PAIR(Color::BG) | A_DIM);
+    if (state.show_hints)
+        center_text(H - 1, W, "space·+/-·</>·Ctrl-S·b·q", COLOR_PAIR(Color::BG) | A_DIM);
 }
 
 // ─── v5 overlay: sleep timer prompt ───────────────────────────────────────────
@@ -2306,7 +2314,8 @@ void TUI::stream_more_actions(const AppState& state) {
             attroff(COLOR_PAIR(Color::TITLE));
         }
     }
-    center_text(H - 2, W, "j/k · ⏎ execute · esc back", COLOR_PAIR(Color::BG) | A_DIM);
+    if (state.show_hints)
+        center_text(H - 2, W, "j/k · ⏎ execute · esc back", COLOR_PAIR(Color::BG) | A_DIM);
     stream_status(state);
 }
 
