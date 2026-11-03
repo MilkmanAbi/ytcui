@@ -1658,9 +1658,9 @@ void TUI::draw_settings(const AppState& state) {
     attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
 
     // Tab bar
-    const char* tabs[2] = {"Theme", "Accelerators"};
+    const char* tabs[4] = {"Theme", "Accelerators", "Timer", "About"};
     int tx = px + 2;
-    for (int t = 0; t < 2; t++) {
+    for (int t = 0; t < 4; t++) {
         bool active = (state.settings_tab == t);
         if (active) attron(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
         else        attron(COLOR_PAIR(Color::STATS));
@@ -1730,6 +1730,48 @@ void TUI::draw_settings(const AppState& state) {
         }
     }
 
+    if (state.settings_tab == 2) {
+        // ── Timer tab ────────────────────────────────────────────────────────
+        int y = list_top;
+        // Row 0: sleep timer status / set
+        bool timer_sel = (state.settings_sel == 0);
+        std::string timer_row = state.timer_status.empty()
+            ? "Sleep timer:  off"
+            : "Sleep timer:  " + state.timer_status;
+        if (timer_sel) { attron(sel_attr()); paint_sel_bar(y, px+1, pw-2); }
+        else attron(COLOR_PAIR(Color::BG));
+        mvprintw(y, px + 2, "%-*s", pw - 4, utf8_truncate(timer_row, pw - 4).c_str());
+        if (timer_sel) attroff(sel_attr()); else attroff(COLOR_PAIR(Color::BG));
+        y++;
+        // Row 1: loop toggle
+        bool loop_sel = (state.settings_sel == 1);
+        std::string loop_row = std::string("Loop on end:  ") + (state.loop_enabled ? "on" : "off");
+        if (loop_sel) { attron(sel_attr()); paint_sel_bar(y, px+1, pw-2); }
+        else attron(COLOR_PAIR(Color::BG));
+        mvprintw(y, px + 2, "%-*s", pw - 4, utf8_truncate(loop_row, pw - 4).c_str());
+        if (loop_sel) attroff(sel_attr()); else attroff(COLOR_PAIR(Color::BG));
+        y++;
+        // Hint
+        attron(COLOR_PAIR(Color::BG) | A_DIM);
+        mvprintw(y + 1, px + 2, "%s", utf8_truncate(
+            "Enter on 'Sleep timer' opens the timer prompt (Ctrl-T)", pw - 4).c_str());
+        attroff(COLOR_PAIR(Color::BG) | A_DIM);
+    } else if (state.settings_tab == 3) {
+        // ── About tab ────────────────────────────────────────────────────────
+        int y = list_top;
+        attron(COLOR_PAIR(Color::TITLE) | A_BOLD);
+        mvprintw(y++, px + 2, "ytcui %s", VERSION);
+        attroff(COLOR_PAIR(Color::TITLE) | A_BOLD);
+        attron(COLOR_PAIR(Color::BG));
+        mvprintw(y++, px + 2, "A terminal YouTube client.");
+        y++;
+        mvprintw(y++, px + 2, "github.com/MilkmanAbi/ytcui");
+        mvprintw(y++, px + 2, "github.com/MilkmanAbi/ytcui-dl");
+        y++;
+        mvprintw(y++, px + 2, "MIT License");
+        attroff(COLOR_PAIR(Color::BG));
+    }
+
     // Footer: toast (if any) else the key hints
     attron(COLOR_PAIR(Color::STATS));
     if (!state.settings_toast.empty()) {
@@ -1738,10 +1780,14 @@ void TUI::draw_settings(const AppState& state) {
     } else if (state.settings_capturing) {
         mvprintw(py + ph - 2, px + 2, "press a key to bind  (Esc cancels)");
     }
-    const char* hint = (state.settings_tab == 0)
-        ? "Tab: switch   j/k: move   Enter: apply theme   Ctrl-S/q: close"
-        : "Tab: switch   j/k: move   Enter: rebind   Ctrl-S/q: close";
-    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(hint, pw - 4).c_str());
+    static const char* hints[4] = {
+        "Tab: switch   j/k: move   Enter: apply   Ctrl-S/q: close",
+        "Tab: switch   j/k: move   Enter: rebind  Ctrl-S/q: close",
+        "Tab: switch   j/k: move   Enter: toggle  Ctrl-S/q: close",
+        "Tab: switch   Ctrl-S/q: close",
+    };
+    int ti = std::clamp(state.settings_tab, 0, 3);
+    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(hints[ti], pw - 4).c_str());
     attroff(COLOR_PAIR(Color::STATS));
 }
 

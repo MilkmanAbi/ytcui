@@ -1368,7 +1368,7 @@ void App::handle_settings_key(int ch) {
             return;
 
         case '\t':                          // Tab switches sub-tabs
-            state_.settings_tab = (state_.settings_tab + 1) % 2;
+            state_.settings_tab = (state_.settings_tab + 1) % 4;
             state_.settings_sel = 0;
             return;
 
@@ -1377,7 +1377,10 @@ void App::handle_settings_key(int ch) {
             return;
 
         case KEY_DOWN: case 'j': {
-            int n = (state_.settings_tab == 0) ? kThemeCount : kAccelCount;
+            int n = (state_.settings_tab == 0) ? kThemeCount
+                  : (state_.settings_tab == 1) ? kAccelCount
+                  : (state_.settings_tab == 2) ? 2   // timer + loop
+                  : 0;                                 // about: display only
             if (state_.settings_sel < n - 1) state_.settings_sel++;
             return;
         }
@@ -1390,10 +1393,21 @@ void App::handle_settings_key(int ch) {
                     state_.settings_toast = std::string("theme: ") +
                                             kThemeNames[state_.settings_sel];
                 }
-            } else {
+            } else if (state_.settings_tab == 1) {
                 // Accelerators tab: begin capturing the next key.
                 state_.settings_capturing = true;
                 state_.settings_toast = "press a key to bind (Esc to cancel)";
+            } else if (state_.settings_tab == 2) {
+                if (state_.settings_sel == 0) {
+                    // Sleep timer row: close settings, open timer prompt
+                    state_.show_settings = false;
+                    config_.save();
+                    handle_timer_key();
+                } else {
+                    // Loop toggle row
+                    state_.loop_enabled = !state_.loop_enabled;
+                    state_.settings_toast = state_.loop_enabled ? "Loop: on" : "Loop: off";
+                }
             }
             return;
 
