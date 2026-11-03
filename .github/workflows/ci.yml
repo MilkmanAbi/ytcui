@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # ── Linux: GCC matrix ────────────────────────────────────────────────────────
+  linux-gcc:
+    name: Linux gcc-${{ matrix.gcc }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        gcc: [12, 13, 14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-${{ matrix.gcc }} g++-${{ matrix.gcc }} \
+            cmake ninja-build \
+            libssl-dev zlib1g-dev libncursesw5-dev
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_CXX_COMPILER=g++-${{ matrix.gcc }} \
+            -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Smoke test
+        run: |
+          ./build/ytcui --version
+          ./build/ytcui --themes
+          ./build/ytcui --colors
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  # ── Linux: Clang matrix ──────────────────────────────────────────────────────
+  linux-clang:
+    name: Linux clang-${{ matrix.clang }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        clang: [16, 17, 18]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-${{ matrix.clang }} \
+            cmake ninja-build \
+            libssl-dev zlib1g-dev libncursesw5-dev
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_CXX_COMPILER=clang++-${{ matrix.clang }} \
+            -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Smoke test
+        run: |
+          ./build/ytcui --version
+          ./build/ytcui --themes
+          ./build/ytcui --colors
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  # ── macOS matrix ─────────────────────────────────────────────────────────────
+  macos:
+    name: macOS ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-14, macos-13]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: brew install cmake ninja openssl zlib ncurses
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_ROOT_DIR=$(brew --prefix openssl) \
+            -DZLIB_ROOT=$(brew --prefix zlib) \
+            -DCURSES_INCLUDE_PATH=$(brew --prefix ncurses)/include \
+            -DCURSES_LIBRARY=$(brew --prefix ncurses)/lib/libncursesw.dylib
+      - name: Build
+        run: cmake --build build
+      - name: Smoke test
+        run: |
+          ./build/ytcui --version
+          ./build/ytcui --themes
+          ./build/ytcui --colors
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  # ── FreeBSD ───────────────────────────────────────────────────────────────────
+  freebsd:
+    name: FreeBSD 14
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: pkg install -y cmake ninja openssl zlib ncurses
+          run: |
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+            cmake --build build
+            ./build/ytcui --version
+            ./build/ytcui --themes
+            ./build/ytcui --colors
+            ctest --test-dir build --output-on-failure
+
+  # ── NetBSD ────────────────────────────────────────────────────────────────────
+  netbsd:
+    name: NetBSD 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: pkgin -y install cmake ninja-build openssl zlib ncurses
+          run: |
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+            cmake --build build
+            ./build/ytcui --version
+            ./build/ytcui --themes
+            ./build/ytcui --colors
+            ctest --test-dir build --output-on-failure
+
+  # ── OpenBSD ───────────────────────────────────────────────────────────────────
+  openbsd:
+    name: OpenBSD 7
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          prepare: pkg_add cmake ninja openssl%3 zlib ncurses
+          run: |
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+            cmake --build build
+            ./build/ytcui --version
+            ./build/ytcui --themes
+            ./build/ytcui --colors
+            ctest --test-dir build --output-on-failure

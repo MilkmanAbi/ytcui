@@ -1,0 +1,11 @@
+# ois.lock -- dependency versions resolved at install time.
+# Commit this. It detects drift; it does not pin versions
+# (system package managers cannot install arbitrary old ones).
+# Regenerate: ois lock    Compare: ois lock --check
+ois_version	3.0.0
+platform	linux/x86_64	apt
+dep	ncurses	libncurses-dev	6.4.20240113
+dep	curl	libcurl4-openssl-dev	8.5.0
+dep	openssl	libssl-dev	3.0.13
+dep	chafa	chafa	unknown
+dep	mpv	mpv	unknown
