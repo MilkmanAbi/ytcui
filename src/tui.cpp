@@ -4,6 +4,7 @@
 #include "termcaps.h"
 #include "log.h"
 #include "core/share.h"
+#include "core/layout.h"
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -843,23 +844,46 @@ void TUI::draw_results_panel(const AppState& state) {
     int iw = std::max(0, lw - 2);
     int mv = ah - 1;
 
+    auto col = ytcui::layout::results_columns(iw);
+
     for (int i = 0; i < mv && (i + state.results_scroll) < (int)state.results.size(); i++) {
         int idx = i + state.results_scroll;
         int y   = iy + i;
         if (y >= ey) break;
 
         bool sel = (idx == state.selected_result);
-        std::string title = utf8_truncate(state.results[idx].title, iw);
-        int tw = utf8_display_width(title);
+        const auto& v = state.results[idx];
+
+        // Build the composite result row using computed column widths
+        std::string marker = sel ? "\xe2\x80\xba " : "  ";  // "› " or "  "
+        std::string title_col = utf8_truncate(v.title, col.title);
+        // Pad title to its column width
+        int tw = utf8_display_width(title_col);
+        while (tw < col.title) { title_col += ' '; tw++; }
+
+        std::string row = marker + title_col;
+        if (col.show_channel() && !v.channel.empty()) {
+            row += ' ';
+            row += utf8_truncate(v.channel, col.channel);
+        }
+        if (col.show_duration() && v.duration_seconds > 0) {
+            int d = v.duration_seconds;
+            char dbuf[16];
+            if (d >= 3600) snprintf(dbuf, sizeof(dbuf), " %d:%02d:%02d", d/3600, (d%3600)/60, d%60);
+            else           snprintf(dbuf, sizeof(dbuf), " %d:%02d", d/60, d%60);
+            row += dbuf;
+        }
 
         if (sel) {
             attron(sel_attr());
-            mvprintw(y, 1, "%s", title.c_str());
-            for (int j = tw; j < iw; j++) addch(' ');
+            mvprintw(y, 1, "%s", utf8_truncate(row, iw).c_str());
+            // Fill remaining width
+            int rw2 = utf8_display_width(utf8_truncate(row, iw));
+            for (int j = rw2; j < iw; j++) addch(' ');
             attroff(sel_attr());
         } else {
             attron(COLOR_PAIR(Color::BG));
-            mvprintw(y, 1, "%s", title.c_str());
+            mvprintw(y, 1, "%s", utf8_truncate(row, iw).c_str());
             attroff(COLOR_PAIR(Color::BG));
         }
     }
@@ -1068,8 +1092,24 @@ void TUI::draw_message_bar(const AppState& state) {
     } else if (!state.status_message.empty() && state.status_message.size() >= 2
                && state.status_message.substr(0, 2) != "__") {
         attron(COLOR_PAIR(Color::BG));
-        mvprintw(y + 1, 1, "%s", utf8_truncate(state.status_message, w - 2).c_str());
+        // Reserve space for timer indicator on the right
+        std::string timer_tag = state.timer_status.empty() ? "" : " \xe2\x8f\xb1 " + state.timer_status;
+        int msg_max = w - 2 - (int)timer_tag.size();
+        if (msg_max < 4) msg_max = w - 2;
+        mvprintw(y + 1, 1, "%s", utf8_truncate(state.status_message, msg_max).c_str());
         attroff(COLOR_PAIR(Color::BG));
+        if (!timer_tag.empty() && msg_max < w - 2) {
+            attron(COLOR_PAIR(Color::STATS) | A_DIM);
+            mvprintw(y + 1, w - 1 - (int)timer_tag.size(), "%s", timer_tag.c_str());
+            attroff(COLOR_PAIR(Color::STATS) | A_DIM);
+        }
+    }
+    // Queue count indicator (bottom-left when queue is non-empty)
+    if (!state.queue_items.empty()) {
+        attron(COLOR_PAIR(Color::CHANNEL) | A_DIM);
+        std::string qtag = " Q:" + std::to_string(state.queue_items.size()) + " ";
+        mvprintw(y + 2, 1, "%s", qtag.c_str());
+        attroff(COLOR_PAIR(Color::CHANNEL) | A_DIM);
     }
 }
 
