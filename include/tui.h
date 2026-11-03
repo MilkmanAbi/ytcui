@@ -16,6 +16,7 @@ public:
     void shutdown();
     void render(const AppState& state, const Library* lib);
     void get_dimensions(int& w, int& h);
+    void show_qr_fullscreen(const std::string& url);
 
     static int  utf8_display_width(const std::string& s);
     static std::string utf8_truncate(const std::string& s, int max_cols);
@@ -107,6 +108,7 @@ private:
     void stream_search(const AppState& state);
     void stream_browse(const AppState& state);
     void stream_actions(const AppState& state);
+    void stream_more_actions(const AppState& state);
     void stream_playing(const AppState& state);
     void stream_header(const AppState& state, const std::string& title);
     void stream_status(const AppState& state);

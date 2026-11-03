@@ -737,6 +737,13 @@ int App::run() {
             }
         }
 
+        if (state_.status_message == "__STREAM_MORE_ACTIONS__") {
+            build_actions();
+            state_.selected_action = 0;
+            state_.stream_screen   = (int)StreamScreen::MoreActions;
+            state_.status_message.clear();
+        }
+
         // ── Home tab item clicked / Enter'd → search that title ───────────────
         if (state_.status_message == "__HOME_SEARCH__") {
             std::string title;
@@ -902,8 +909,17 @@ int App::run() {
 
         // Standard action menu executed
         if (state_.status_message == "__EXEC_ACTION__") {
-            if (state_.selected_action >= 0 && state_.selected_action < (int)state_.actions.size())
-                execute_action(state_.actions[state_.selected_action].action);
+            if (state_.selected_action >= 0 && state_.selected_action < (int)state_.actions.size()) {
+                Action act = state_.actions[state_.selected_action].action;
+                execute_action(act);
+                // In streamlined mode, play actions should land on the Playing screen.
+                if (state_.ui_mode == 1 &&
+                    (act == Action::PlayVideo || act == Action::PlayAudio || act == Action::PlayAudioLoop)) {
+                    if (!state_.results.empty() && state_.selected_result < (int)state_.results.size())
+                        state_.stream_now = state_.results[state_.selected_result];
+                    state_.stream_screen = (int)StreamScreen::Playing;
+                }
+            }
             if (state_.status_message == "__EXEC_ACTION__")
                 state_.status_message = rgreet();
         }
@@ -943,8 +959,9 @@ void App::do_search() {
         auto p = ytcui::url::parse(state_.search_query);
         if (p.kind == ytcui::url::Kind::Video && !p.video_id.empty()) {
             Video v;
-            v.id = p.video_id;
-            v.title = "(direct link) " + p.video_id;
+            v.id            = p.video_id;
+            v.title         = "(direct link) " + p.video_id;
+            v.thumbnail_url = "https://i.ytimg.com/vi/" + p.video_id + "/mqdefault.jpg";
             state_.results = { v };
             state_.selected_result = 0;
             state_.results_scroll  = 0;
@@ -953,6 +970,7 @@ void App::do_search() {
             state_.active_tab      = Tab::Results;
             state_.focus           = Panel::Actions;
             state_.status_message  = "Direct link — press Enter to play (^_^)";
+            prefetch_thumbnails();
             return;
         }
     }
@@ -1609,15 +1627,11 @@ void App::apply_timer_input() {
 }
 
 void App::show_share_menu(const std::string& url) {
-    state_.share_url = url;
-    state_.show_share = true;
-    state_.focus = Panel::ShareMenu;
-    // copy to clipboard immediately; QR is rendered in draw_share_menu
     auto res = ytcui::share::copy(url);
-    if (res.ok)
-        state_.status_message = "Copied! " + url;
-    else
-        state_.status_message = "QR ready — clipboard unavailable";
+    state_.status_message = res.ok ? "Copied to clipboard!" : "Clipboard unavailable";
+    tui_.render(state_, &library_);
+    tui_.show_qr_fullscreen(url);
+    state_.status_message = rgreet();
 }
 
 void App::switch_backend(BackendKind k) {

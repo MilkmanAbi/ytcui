@@ -1909,8 +1909,9 @@ void TUI::render_streamlined(const AppState& state, const Library* lib) {
         case StreamScreen::Menu:    stream_menu(state, lib); break;
         case StreamScreen::Search:  stream_search(state);    break;
         case StreamScreen::Browse:  stream_browse(state);    break;
-        case StreamScreen::Actions: stream_actions(state);   break;
-        case StreamScreen::Playing: stream_playing(state);   break;
+        case StreamScreen::Actions:     stream_actions(state);      break;
+        case StreamScreen::Playing:     stream_playing(state);      break;
+        case StreamScreen::MoreActions: stream_more_actions(state); break;
     }
 }
 
@@ -2049,9 +2050,10 @@ void TUI::stream_actions(const AppState& state) {
              center_text(y + 1, W, v->channel, COLOR_PAIR(Color::CHANNEL) | A_DIM); }
     y += 3;
 
-    const char* labels[2] = { uni ? "▶  Play video" : "Play video",
-                              uni ? "♪  Play audio" : "Play audio" };
-    for (int i = 0; i < 2; i++) {
+    const char* labels[3] = { uni ? "▶  Play video" : "Play video",
+                              uni ? "♪  Play audio" : "Play audio",
+                              uni ? "⋯  More..."    : "More..." };
+    for (int i = 0; i < 3; i++) {
         int ry = y + i;
         bool s = (state.stream_action_sel == i);
         std::string lab = labels[i];
@@ -2064,7 +2066,7 @@ void TUI::stream_actions(const AppState& state) {
             attron(COLOR_PAIR(Color::TITLE)); mvprintw(ry, x, "%s", lab.c_str()); attroff(COLOR_PAIR(Color::TITLE));
         }
     }
-    center_text(H - 2, W, "j/k · ⏎ play · esc back", COLOR_PAIR(Color::BG) | A_DIM);
+    center_text(H - 2, W, "j/k · ⏎ select · esc back", COLOR_PAIR(Color::BG) | A_DIM);
     stream_status(state);
 }
 
@@ -2266,6 +2268,102 @@ void TUI::draw_share_menu(const AppState& state) {
     attron(COLOR_PAIR(Color::BG) | A_DIM);
     mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Copied to clipboard  —  any key to close ", pw - 4).c_str());
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
+}
+
+void TUI::stream_more_actions(const AppState& state) {
+    int W = state.term_w, H = state.term_h;
+    stream_header(state, "More");
+
+    if (state.actions.empty()) {
+        center_text(H / 2, W, "No actions available", COLOR_PAIR(Color::BG) | A_DIM);
+        stream_status(state);
+        return;
+    }
+
+    int n = (int)state.actions.size();
+    int vis = std::max(1, H - 6);
+    int scroll = 0;
+    if (state.selected_action >= scroll + vis) scroll = state.selected_action - vis + 1;
+    if (state.selected_action < scroll)        scroll = state.selected_action;
+
+    for (int i = 0; i < vis && scroll + i < n; i++) {
+        int idx = scroll + i;
+        bool sel = (idx == state.selected_action);
+        int ry = 3 + i;
+        std::string lab = state.actions[idx].label;
+        int lw = utf8_display_width(lab);
+        int x = std::max(2, (W - lw) / 2);
+        if (sel) {
+            paint_sel_bar(ry, x - 2, lw + 4);
+            attron(sel_attr() | A_BOLD);
+            mvprintw(ry, x, "%s", lab.c_str());
+            attroff(sel_attr() | A_BOLD);
+        } else {
+            attron(COLOR_PAIR(Color::TITLE));
+            mvprintw(ry, x, "%s", lab.c_str());
+            attroff(COLOR_PAIR(Color::TITLE));
+        }
+    }
+    center_text(H - 2, W, "j/k · ⏎ execute · esc back", COLOR_PAIR(Color::BG) | A_DIM);
+    stream_status(state);
+}
+
+// Suspend ncurses, render the QR fullscreen with half-block chars, wait for any key, restore.
+void TUI::show_qr_fullscreen(const std::string& url) {
+    auto qr = ytcui::share::encode(url);
+
+    def_prog_mode();
+    endwin();
+
+    // ANSI: black fg (30), white bg (47) for proper QR contrast.
+    const char* DARK = "\033[30;47m";
+    const char* RST  = "\033[0m";
+
+    printf("\033[2J\033[H");  // clear + home
+
+    if (qr.size == 0) {
+        printf("%s  URL too long for QR code  %s\n\n  %s\n\nPress any key...\n", DARK, RST, url.c_str());
+        fflush(stdout);
+        getchar();
+        reset_prog_mode();
+        clear(); refresh();
+        return;
+    }
+
+    const int n = qr.full_size();
+
+    // Top quiet margin row
+    printf("%s", DARK);
+    for (int x = 0; x < n + 2; x++) printf(" ");
+    printf("%s\n", RST);
+
+    // QR rows: process 2 QR rows per terminal row using half-block chars.
+    for (int y = 0; y < n; y += 2) {
+        printf("%s ", DARK);  // left margin
+        for (int x = 0; x < n; x++) {
+            bool top = qr.at_padded(x, y);
+            bool bot = (y + 1 < n) ? qr.at_padded(x, y + 1) : false;
+            if      (top && bot)  printf("\xe2\x96\x88");  // █ full block
+            else if (top)         printf("\xe2\x96\x80");  // ▀ upper half
+            else if (bot)         printf("\xe2\x96\x84");  // ▄ lower half
+            else                  printf(" ");
+        }
+        printf(" %s\n", RST);  // right margin
+    }
+    // If n is odd, bottom quiet row already covered by the last loop iteration's bot=false.
+    // Add explicit bottom margin row.
+    printf("%s", DARK);
+    for (int x = 0; x < n + 2; x++) printf(" ");
+    printf("%s\n", RST);
+
+    printf("\n  %s\n\n  Press any key to return...\n", url.c_str());
+    fflush(stdout);
+
+    getchar();
+
+    reset_prog_mode();
+    clear();
+    refresh();
 }
 
 } // namespace ytui

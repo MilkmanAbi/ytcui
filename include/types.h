@@ -82,7 +82,7 @@ enum class Tab { Library, Playlists, Feed, History, Results };
 //   Browse  - a dense list (search results, saved, feed, history, or playlists)
 //   Actions - play-video / play-audio chooser for the highlighted item
 //   Playing - now-playing card
-enum class StreamScreen { Menu, Search, Browse, Actions, Playing };
+enum class StreamScreen { Menu, Search, Browse, Actions, Playing, MoreActions };
 
 enum class Action {
     PlayVideo, PlayAudio, PlayAudioLoop,

@@ -75,13 +75,27 @@ static bool stream_handle(int ch, AppState& state) {
         }
 
         case StreamScreen::Actions:
-            if (ch == 'j' || ch == KEY_DOWN) state.stream_action_sel = 1;
-            else if (ch == 'k' || ch == KEY_UP) state.stream_action_sel = 0;
+            if (ch == 'j' || ch == KEY_DOWN) state.stream_action_sel = std::min(state.stream_action_sel + 1, 2);
+            else if (ch == 'k' || ch == KEY_UP) state.stream_action_sel = std::max(state.stream_action_sel - 1, 0);
             else if (ch == 'b' || ch == 27) state.stream_screen = (int)StreamScreen::Browse;
             else if (ch == 'q') state.running = false;
-            else if (is_enter(ch))
-                state.status_message = state.stream_action_sel == 0 ? "__STREAM_PLAY_VIDEO__"
-                                                                    : "__STREAM_PLAY_AUDIO__";
+            else if (is_enter(ch)) {
+                if (state.stream_action_sel == 0)      state.status_message = "__STREAM_PLAY_VIDEO__";
+                else if (state.stream_action_sel == 1) state.status_message = "__STREAM_PLAY_AUDIO__";
+                else                                   state.status_message = "__STREAM_MORE_ACTIONS__";
+            }
+            return false;
+
+        case StreamScreen::MoreActions:
+            if (ch == 'j' || ch == KEY_DOWN)
+                state.selected_action = std::min(state.selected_action + 1,
+                                                 std::max(0, (int)state.actions.size() - 1));
+            else if (ch == 'k' || ch == KEY_UP)
+                state.selected_action = std::max(state.selected_action - 1, 0);
+            else if (ch == 'b' || ch == 27) state.stream_screen = (int)StreamScreen::Actions;
+            else if (ch == 'q') state.running = false;
+            else if (is_enter(ch) && !state.actions.empty())
+                state.status_message = "__EXEC_ACTION__";
             return false;
 
         case StreamScreen::Playing:
