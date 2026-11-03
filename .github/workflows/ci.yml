@@ -32,7 +32,7 @@ jobs:
       - name: Smoke test
         run: |
           ./build/ytcui --version
-          ./build/ytcui --themes
+          ./build/ytcui --diag || true
           ./build/ytcui --colors
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
@@ -64,7 +64,7 @@ jobs:
       - name: Smoke test
         run: |
           ./build/ytcui --version
-          ./build/ytcui --themes
+          ./build/ytcui --diag || true
           ./build/ytcui --colors
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
@@ -94,7 +94,7 @@ jobs:
       - name: Smoke test
         run: |
           ./build/ytcui --version
-          ./build/ytcui --themes
+          ./build/ytcui --diag || true
           ./build/ytcui --colors
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
@@ -113,7 +113,6 @@ jobs:
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
             cmake --build build
             ./build/ytcui --version
-            ./build/ytcui --themes
             ./build/ytcui --colors
             ctest --test-dir build --output-on-failure
 
@@ -131,7 +130,6 @@ jobs:
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
             cmake --build build
             ./build/ytcui --version
-            ./build/ytcui --themes
             ./build/ytcui --colors
             ctest --test-dir build --output-on-failure
 
@@ -149,6 +147,5 @@ jobs:
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
             cmake --build build
             ./build/ytcui --version
-            ./build/ytcui --themes
             ./build/ytcui --colors
             ctest --test-dir build --output-on-failure

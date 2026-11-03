@@ -74,6 +74,8 @@ target_include_directories(ytcui PRIVATE ${YTCUI_INCLUDE_DIRS})
 
 target_compile_definitions(ytcui PRIVATE
     YTUI_VERSION="${YTCUI_VERSION_STR}"
+    YTCUI_VERSION="${YTCUI_VERSION_STR}"
+    USE_YTCUIDL          # default backend: ytcui-dl (native InnerTube, no yt-dlp dep)
 )
 
 target_link_libraries(ytcui PRIVATE
@@ -116,7 +118,9 @@ macro(add_core_test TEST_SRC)
     get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
     add_executable(${TEST_NAME} ${TEST_SRC} ${CORE_SRCS} ${QRCODEGEN_SRCS})
     target_include_directories(${TEST_NAME} PRIVATE ${CORE_TEST_INCLUDE_DIRS})
-    target_compile_definitions(${TEST_NAME} PRIVATE YTUI_VERSION="${YTCUI_VERSION_STR}")
+    target_compile_definitions(${TEST_NAME} PRIVATE
+        YTUI_VERSION="${YTCUI_VERSION_STR}"
+        YTCUI_VERSION="${YTCUI_VERSION_STR}")
     target_link_libraries(${TEST_NAME} PRIVATE ${CORE_TEST_LIBS})
     target_compile_options(${TEST_NAME} PRIVATE ${CORE_TEST_FLAGS})
     add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
