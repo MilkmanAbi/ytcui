@@ -10,6 +10,9 @@
 #include "core/timer.h"
 #include "core/queue.h"
 #include "core/watchstate.h"
+#include "core/sponsorblock.h"
+#include <atomic>
+#include <mutex>
 
 namespace ytui {
 
@@ -38,6 +41,13 @@ private:
     ytcui::SleepTimer timer_;
     Queue             queue_;
     ytcui::WatchState watch_state_;
+
+    // SponsorBlock: fetched off-thread, protected by sb_mutex_
+    ytcui::sb::Segments     sb_segs_;
+    std::mutex              sb_mutex_;
+    std::atomic<bool>       sb_fetching_{false};
+    // video_id of the currently-loaded SB data (or empty if none)
+    std::string             sb_video_id_;
 
     void build_actions();
     void build_playlist_actions();
@@ -71,6 +81,8 @@ private:
     void show_share_menu(const std::string& url);
     void switch_backend(BackendKind k);
     void tick_timer();              // called each frame; pauses mpv when due
+    void start_sb_fetch(const std::string& video_id);  // launch background fetch
+    void tick_sponsorblock();       // called each frame; checks skip and updates summary
 };
 
 } // namespace ytui

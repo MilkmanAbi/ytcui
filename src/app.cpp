@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <sstream>
+#include <thread>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -418,6 +419,7 @@ int App::run() {
     watch_state_.load();
 
     bool was_playing = false;
+    std::string sb_loaded_for;  // video_id for which SB was last requested
 
     while (state_.running) {
         tui_.get_dimensions(state_.term_w, state_.term_h);
@@ -438,13 +440,25 @@ int App::run() {
             state_.playback_dur = 0;
         }
 
-        // v5: end-of-play detection + sleep timer
+        // v5: end-of-play detection + sleep timer + SponsorBlock
         {
-            bool just_ended = was_playing && !state_.is_playing;
+            bool just_ended   = was_playing && !state_.is_playing;
+            bool just_started = !was_playing && state_.is_playing;
             was_playing = state_.is_playing;
-            if (just_ended) on_video_end();
+            if (just_ended)   on_video_end();
+            // Kick off a SB fetch whenever a NEW video starts (or a fresh play
+            // after the last one ended). Compare against the video_id we already
+            // fetched so we don't re-fetch on resume-from-pause.
+            if (just_started || (state_.is_playing && !state_.now_playing.empty()
+                                  && state_.now_playing != sb_loaded_for)) {
+                if (state_.now_playing != sb_loaded_for) {
+                    sb_loaded_for = state_.now_playing;
+                    start_sb_fetch(state_.now_playing);
+                }
+            }
         }
         tick_timer();
+        tick_sponsorblock();
         state_.timer_status = timer_.active() ? timer_.describe() : "";
 
         // ── Resolve UI mode ───────────────────────────────────────────────────
@@ -1505,6 +1519,53 @@ void App::switch_backend(BackendKind k) {
     const char* name = (k == BackendKind::YtcuiDl) ? "ytcui-dl (native)" : "yt-dlp";
     state_.status_message = std::string("Backend: ") + name;
     Log::write("Backend switched to %s", name);
+}
+
+void App::start_sb_fetch(const std::string& video_id) {
+    if (!config_.sponsorblock)  return;
+    if (video_id.empty())       return;
+    // Prevent overlapping fetches
+    bool expected = false;
+    if (!sb_fetching_.compare_exchange_strong(expected, true)) return;
+
+    // Copy everything the thread needs — no shared pointers into App
+    std::string vid  = video_id;
+    std::string cats = config_.sponsorblock_categories;
+    std::thread([this, vid, cats]() {
+        auto segs = ytcui::sb::fetch(vid, cats);
+        {
+            std::lock_guard<std::mutex> lk(sb_mutex_);
+            sb_segs_      = std::move(segs);
+            sb_video_id_  = vid;
+        }
+        sb_fetching_.store(false);
+    }).detach();
+}
+
+void App::tick_sponsorblock() {
+    // Update the summary string (cheap even under lock)
+    {
+        std::lock_guard<std::mutex> lk(sb_mutex_);
+        if (sb_segs_.fetched)
+            state_.sponsorblock_summary = sb_segs_.summary();
+        else
+            state_.sponsorblock_summary.clear();
+    }
+
+    if (!config_.sponsorblock || !state_.is_playing || state_.is_paused) return;
+
+    double pos = state_.playback_pos;
+    if (pos < 0) return;
+
+    double target;
+    {
+        std::lock_guard<std::mutex> lk(sb_mutex_);
+        target = sb_segs_.skip_target(pos);
+    }
+    if (target >= 0) {
+        player_.seek_to(target);
+        Log::write("SponsorBlock skip: %.1f -> %.1f", pos, target);
+    }
 }
 
 } // namespace ytui

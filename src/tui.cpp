@@ -1016,6 +1016,8 @@ void TUI::draw_info_panel(const AppState& state, int px, int py, int pw, int ph,
     if (!v.duration.empty())   line(Color::TITLE, "Length: " + v.duration);
     if (!v.channel.empty())    line(Color::CHANNEL, "Uploaded by " + v.channel);
     if (!v.upload_date.empty()) line(Color::PUBLISHED, "Published " + v.upload_date);
+    if (!state.sponsorblock_summary.empty())
+        line(Color::TAG, "SB: " + state.sponsorblock_summary);
 }
 
 // ─── Format mm:ss ─────────────────────────────────────────────────────────────
@@ -1811,6 +1813,12 @@ void TUI::draw_shortcuts(const AppState& state) {
         {"-",         "volume down (-5%)"},
         {">",         "seek forward 10s"},
         {"<",         "seek backward 10s"},
+        // v5 features
+        {"Ctrl-T",    "sleep timer (set / cancel)"},
+        {"Ctrl-R",    "toggle loop on end"},
+        {"Ctrl-Q",    "queue view"},
+        {"Ctrl-B",    "switch backend (ytcui-dl / yt-dlp)"},
+        {"Ctrl-S",    "settings panel"},
         // actions
         {"s",         "sort menu"},
         {"n",         "new playlist (in playlist view)"},
