@@ -1290,15 +1290,6 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
             mvprintw(sy + 4, 4, "Search for a video, open its actions, and choose \"Add to playlist\".");
             attroff(COLOR_PAIR(Color::BG) | A_DIM);
         }
-        // Cute art centered in the empty space
-        int cy = sy + std::max(6, ah / 2 - 2);
-        const char* art[] = { "  \xe2\x99\xaa\xe2\x99\xab\xe2\x99\xaa", "  [===]", "  |   |", "  '---'" };
-        for (int i = 0; i < 4 && cy + i < ey; i++) {
-            int ax = std::max(0, (state.term_w - 10) / 2);
-            attron(COLOR_PAIR(Color::ACCENT) | A_DIM);
-            mvprintw(cy + i, ax, "%s", art[i]);
-            attroff(COLOR_PAIR(Color::ACCENT) | A_DIM);
-        }
         return;
     }
 
@@ -1659,17 +1650,18 @@ void TUI::draw_settings(const AppState& state) {
     mvprintw(py, px + (pw - 10) / 2, " Settings ");
     attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
 
-    // Tab bar
-    const char* tabs[4] = {"Theme", "Accelerators", "Timer", "About"};
+    // Tab bar  (5 tabs)
+    static const char* const kSettingsTabs[] = {"Theme","Accelerators","General","Timer","About"};
+    static const int kNSettingsTabs = 5;
     int tx = px + 2;
-    for (int t = 0; t < 4; t++) {
+    for (int t = 0; t < kNSettingsTabs; t++) {
         bool active = (state.settings_tab == t);
         if (active) attron(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
         else        attron(COLOR_PAIR(Color::STATS));
-        mvprintw(py + 1, tx, " %s ", tabs[t]);
+        mvprintw(py + 1, tx, " %s ", kSettingsTabs[t]);
         if (active) attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
         else        attroff(COLOR_PAIR(Color::STATS));
-        tx += (int)strlen(tabs[t]) + 3;
+        tx += (int)strlen(kSettingsTabs[t]) + 3;
     }
 
     int list_top = py + 3;
@@ -1699,7 +1691,7 @@ void TUI::draw_settings(const AppState& state) {
                 attroff(COLOR_PAIR(Color::BG));
             }
         }
-    } else {
+    } else if (state.settings_tab == 1) {
         // ── Accelerators tab: label ............ key ──
         int n = (int)state.settings_accel_labels.size();
         int sel = state.settings_sel;
@@ -1730,35 +1722,57 @@ void TUI::draw_settings(const AppState& state) {
                 attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
             }
         }
-    }
 
-    if (state.settings_tab == 2) {
+    } else if (state.settings_tab == 2) {
+        // ── General tab: backend + UI mode + SponsorBlock ────────────────────
+        struct Row { std::string label; std::string value; };
+        Row rows[] = {
+            { "Backend",      state.active_backend == BackendKind::YtcuiDl
+                              ? "ytcui-dl  (native)" : "yt-dlp" },
+            { "UI mode",      state.ui_mode == 0 ? "normal"
+                            : state.ui_mode == 1 ? "streamlined" : "minimal" },
+            { "SponsorBlock", state.sponsorblock_enabled ? "on" : "off" },
+        };
+        int nrows = (int)(sizeof(rows)/sizeof(rows[0]));
+        int sel = state.settings_sel;
+        for (int i = 0; i < nrows && i < list_rows; i++) {
+            int y = list_top + i;
+            bool cur = (i == sel);
+            std::string rowtext = rows[i].label;
+            // dots fill to column 20, then value
+            while ((int)rowtext.size() < 20) rowtext += '.';
+            rowtext += "  " + rows[i].value;
+            if (cur) { paint_sel_bar(y, px+1, pw-2); attron(sel_attr()); }
+            else attron(COLOR_PAIR(Color::BG));
+            mvprintw(y, px + 2, "%-*s", pw - 4, utf8_truncate(rowtext, pw - 4).c_str());
+            if (cur) attroff(sel_attr()); else attroff(COLOR_PAIR(Color::BG));
+        }
+        attron(COLOR_PAIR(Color::BG) | A_DIM);
+        mvprintw(list_top + nrows + 1, px + 2, "%s",
+            utf8_truncate("Enter: cycle value   Ctrl-B: backend  Ctrl-S/q: close", pw-4).c_str());
+        attroff(COLOR_PAIR(Color::BG) | A_DIM);
+
+    } else if (state.settings_tab == 3) {
         // ── Timer tab ────────────────────────────────────────────────────────
         int y = list_top;
-        // Row 0: sleep timer status / set
-        bool timer_sel = (state.settings_sel == 0);
-        std::string timer_row = state.timer_status.empty()
-            ? "Sleep timer:  off"
-            : "Sleep timer:  " + state.timer_status;
-        if (timer_sel) { attron(sel_attr()); paint_sel_bar(y, px+1, pw-2); }
-        else attron(COLOR_PAIR(Color::BG));
-        mvprintw(y, px + 2, "%-*s", pw - 4, utf8_truncate(timer_row, pw - 4).c_str());
-        if (timer_sel) attroff(sel_attr()); else attroff(COLOR_PAIR(Color::BG));
-        y++;
-        // Row 1: loop toggle
-        bool loop_sel = (state.settings_sel == 1);
-        std::string loop_row = std::string("Loop on end:  ") + (state.loop_enabled ? "on" : "off");
-        if (loop_sel) { attron(sel_attr()); paint_sel_bar(y, px+1, pw-2); }
-        else attron(COLOR_PAIR(Color::BG));
-        mvprintw(y, px + 2, "%-*s", pw - 4, utf8_truncate(loop_row, pw - 4).c_str());
-        if (loop_sel) attroff(sel_attr()); else attroff(COLOR_PAIR(Color::BG));
-        y++;
-        // Hint
+        auto draw_row = [&](bool sel, const std::string& text) {
+            if (sel) { paint_sel_bar(y, px+1, pw-2); attron(sel_attr()); }
+            else attron(COLOR_PAIR(Color::BG));
+            mvprintw(y, px + 2, "%-*s", pw - 4, utf8_truncate(text, pw - 4).c_str());
+            if (sel) attroff(sel_attr()); else attroff(COLOR_PAIR(Color::BG));
+            y++;
+        };
+        std::string timer_row = "Sleep timer......  ";
+        timer_row += state.timer_status.empty() ? "off" : state.timer_status;
+        draw_row(state.settings_sel == 0, timer_row);
+        std::string loop_row  = std::string("Loop on end......  ") + (state.loop_enabled ? "on" : "off");
+        draw_row(state.settings_sel == 1, loop_row);
         attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(y + 1, px + 2, "%s", utf8_truncate(
-            "Enter on 'Sleep timer' opens the timer prompt (Ctrl-T)", pw - 4).c_str());
+        mvprintw(y + 1, px + 2, "%s",
+            utf8_truncate("Enter: set timer / toggle loop   Ctrl-T: timer", pw-4).c_str());
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
-    } else if (state.settings_tab == 3) {
+
+    } else if (state.settings_tab == 4) {
         // ── About tab ────────────────────────────────────────────────────────
         int y = list_top;
         attron(COLOR_PAIR(Color::TITLE) | A_BOLD);
@@ -1782,13 +1796,14 @@ void TUI::draw_settings(const AppState& state) {
     } else if (state.settings_capturing) {
         mvprintw(py + ph - 2, px + 2, "press a key to bind  (Esc cancels)");
     }
-    static const char* hints[4] = {
+    static const char* hints[5] = {
         "Tab: switch   j/k: move   Enter: apply   Ctrl-S/q: close",
         "Tab: switch   j/k: move   Enter: rebind  Ctrl-S/q: close",
+        "Tab: switch   j/k: move   Enter: cycle   Ctrl-S/q: close",
         "Tab: switch   j/k: move   Enter: toggle  Ctrl-S/q: close",
         "Tab: switch   Ctrl-S/q: close",
     };
-    int ti = std::clamp(state.settings_tab, 0, 3);
+    int ti = std::clamp(state.settings_tab, 0, 4);
     mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(hints[ti], pw - 4).c_str());
     attroff(COLOR_PAIR(Color::STATS));
 }

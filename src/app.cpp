@@ -507,6 +507,9 @@ int App::run() {
 
         // Refresh the settings-UI display snapshot so the TUI can render the
         // panel without depending on Config directly.
+        // Keep settings-display fields in sync whether or not the panel is open,
+        // so the General tab shows live values even before first open.
+        state_.sponsorblock_enabled = config_.sponsorblock;
         if (state_.show_settings) {
             state_.settings_theme_names.assign(kThemeNames, kThemeNames + kThemeCount);
             state_.settings_accel_labels.clear();
@@ -1382,7 +1385,7 @@ void App::handle_settings_key(int ch) {
             return;
 
         case '\t':                          // Tab switches sub-tabs
-            state_.settings_tab = (state_.settings_tab + 1) % 4;
+            state_.settings_tab = (state_.settings_tab + 1) % 5;
             state_.settings_sel = 0;
             return;
 
@@ -1393,9 +1396,34 @@ void App::handle_settings_key(int ch) {
         case KEY_DOWN: case 'j': {
             int n = (state_.settings_tab == 0) ? kThemeCount
                   : (state_.settings_tab == 1) ? kAccelCount
-                  : (state_.settings_tab == 2) ? 2   // timer + loop
+                  : (state_.settings_tab == 2) ? 3   // backend + mode + sb
+                  : (state_.settings_tab == 3) ? 2   // timer + loop
                   : 0;                                 // about: display only
             if (state_.settings_sel < n - 1) state_.settings_sel++;
+            return;
+        }
+
+        case KEY_MOUSE: {
+            // Click on a settings tab label to switch to it.
+            MEVENT ev;
+            if (getmouse(&ev) != OK) return;
+            if (!(ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED))) return;
+            int pw = std::min(60, state_.term_w - 2);
+            int ph = 22; if (ph > state_.term_h - 2) ph = state_.term_h - 2;
+            int px = std::max(0, (state_.term_w - pw) / 2);
+            int py = std::max(0, (state_.term_h - ph) / 2);
+            if (ev.y != py + 1) return;  // only the tab bar row
+            static const char* tabs[] = {"Theme","Accelerators","General","Timer","About"};
+            int tx = px + 2;
+            for (int t = 0; t < 5; t++) {
+                int tw = (int)strlen(tabs[t]) + 3;
+                if (ev.x >= tx && ev.x < tx + tw) {
+                    state_.settings_tab = t;
+                    state_.settings_sel = 0;
+                    return;
+                }
+                tx += tw;
+            }
             return;
         }
 
@@ -1412,6 +1440,29 @@ void App::handle_settings_key(int ch) {
                 state_.settings_capturing = true;
                 state_.settings_toast = "press a key to bind (Esc to cancel)";
             } else if (state_.settings_tab == 2) {
+                // General tab: cycle values
+                if (state_.settings_sel == 0) {
+                    // Backend: cycle ytcui-dl → yt-dlp → ytcui-dl
+                    BackendKind next = (config_.backend == BackendKind::YtcuiDl)
+                                       ? BackendKind::YtDlp : BackendKind::YtcuiDl;
+                    switch_backend(next);
+                } else if (state_.settings_sel == 1) {
+                    // UI mode: cycle normal → streamlined → minimal → normal
+                    int next = (state_.ui_mode + 1) % 3;
+                    state_.ui_mode = next;
+                    config_.mode = (next == 0) ? "normal"
+                                 : (next == 1) ? "streamlined" : "minimal";
+                    config_.save();
+                    state_.settings_toast = "mode: " + config_.mode;
+                } else if (state_.settings_sel == 2) {
+                    // SponsorBlock toggle
+                    config_.sponsorblock = !config_.sponsorblock;
+                    state_.sponsorblock_enabled = config_.sponsorblock;
+                    config_.save();
+                    state_.settings_toast = std::string("SponsorBlock: ")
+                                          + (config_.sponsorblock ? "on" : "off");
+                }
+            } else if (state_.settings_tab == 3) {
                 if (state_.settings_sel == 0) {
                     // Sleep timer row: close settings, open timer prompt
                     state_.show_settings = false;

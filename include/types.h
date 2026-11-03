@@ -224,6 +224,7 @@ struct AppState {
 
     // SponsorBlock status line ("2 segments · 1:47 skippable" or "")
     std::string sponsorblock_summary;
+    bool sponsorblock_enabled = true;   // mirrors config_.sponsorblock for the settings UI
 
     // Watch progress (0..1) for the selected result, for a pip in the row
     double selected_progress = 0.0;
