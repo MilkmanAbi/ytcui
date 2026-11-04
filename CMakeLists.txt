@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ── Find dependencies ─────────────────────────────────────────────────────────
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(Threads REQUIRED)
 
 set(CURSES_NEED_NCURSES TRUE)
 set(CURSES_NEED_WIDE    TRUE)
@@ -89,6 +90,7 @@ target_link_libraries(ytcui PRIVATE
     OpenSSL::Crypto
     ZLIB::ZLIB
     ${CURSES_LIBRARIES}
+    Threads::Threads
 )
 
 # ── Compiler flags ────────────────────────────────────────────────────────────
@@ -112,7 +114,7 @@ set(CORE_TEST_INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/third_party/qrcodegen
 )
 
-set(CORE_TEST_LIBS OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
+set(CORE_TEST_LIBS OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB Threads::Threads)
 
 set(CORE_TEST_FLAGS
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wno-unused-parameter>
