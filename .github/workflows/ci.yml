@@ -138,8 +138,9 @@ jobs:
           prepare: pkg_add cmake ninja-build curl
           run: |
             export PATH=/usr/pkg/bin:$PATH
+            # NetBSD base system ships OpenSSL at /usr; pkgsrc (curl dep) is at /usr/pkg
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DOPENSSL_ROOT_DIR=/usr/pkg
+              -DOPENSSL_ROOT_DIR=/usr
             cmake --build build
             ./build/ytcui --version
             ./build/ytcui --colors
