@@ -838,7 +838,11 @@ int App::run() {
 
         if (state_.status_message == "__SORT_APPLIED__") {
             apply_sort_filter();
-            state_.status_message = rgreet();
+            // Re-run the search so sort/filter takes effect immediately.
+            if (!state_.search_query.empty())
+                do_search();
+            else
+                state_.status_message = rgreet();
         }
 
         if (state_.status_message == "__SAVE_PICKED__") {
@@ -1015,7 +1019,8 @@ void App::do_search() {
     tui_.render(state_, &library_);
 
     std::string cookies = Auth::ytdlp_cookie_args();
-    auto results = youtube_.search(state_.search_query, config_.max_results, cookies);
+    auto results = youtube_.search(state_.search_query, config_.max_results, cookies,
+                                   config_.sort_by, config_.filter_type, config_.filter_dur);
 
     if (results.empty()) {
         state_.status_message = "No results found (T_T)";

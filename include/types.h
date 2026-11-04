@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include "theme.h"
@@ -20,6 +21,7 @@ struct Video {
     std::string duration;
     int duration_seconds = 0;
     std::string view_count;
+    int64_t     view_count_raw = 0;
     std::string upload_date;
     std::string thumbnail_url;
     std::string url;

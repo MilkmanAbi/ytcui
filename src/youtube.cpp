@@ -1,6 +1,7 @@
 #include "youtube.h"
 #include "log.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <cstdio>
 #include <array>
 #include <sstream>
@@ -75,9 +76,13 @@ std::string YouTube::format_duration(int secs) {
 #ifdef USE_YTCUIDL
 
 std::vector<Video> YouTube::search(const std::string& query, int max_results,
-                                    const std::string& /* cookie_args */) {
+                                    const std::string& /* cookie_args */,
+                                    const std::string& sort_by,
+                                    const std::string& /* filter_type */,
+                                    const std::string& filter_dur) {
     std::vector<Video> videos;
-    Log::write("[ytcui-dl] search: '%s' (max %d)", query.c_str(), max_results);
+    Log::write("[ytcui-dl] search: '%s' (max %d, sort=%s)", query.c_str(), max_results,
+               sort_by.empty() ? "relevance" : sort_by.c_str());
 
     try {
         auto results = ytfast::yt_search(query, max_results);
@@ -94,6 +99,7 @@ std::vector<Video> YouTube::search(const std::string& query, int max_results,
             v.url              = r.url.empty() ? "https://www.youtube.com/watch?v=" + r.id : r.url;
             v.is_live          = r.is_live;
             v.view_count       = r.view_count > 0 ? format_views(r.view_count) : "N/A";
+            v.view_count_raw   = static_cast<int64_t>(r.view_count);
             v.upload_date      = r.upload_date;
             if (!v.id.empty()) {
                 Log::write("[ytcui-dl]   [%s] %s (%s)", v.id.c_str(), v.title.c_str(), v.duration.c_str());
@@ -103,6 +109,28 @@ std::vector<Video> YouTube::search(const std::string& query, int max_results,
         Log::write("[ytcui-dl] search returned %zu results", videos.size());
     } catch (const std::exception& e) {
         Log::write("[ytcui-dl] search error: %s", e.what());
+    }
+
+    // Client-side sort (InnerTube params are fixed; we sort the returned list).
+    if (sort_by == "date") {
+        std::sort(videos.begin(), videos.end(), [](const Video& a, const Video& b) {
+            return a.upload_date > b.upload_date;
+        });
+    } else if (sort_by == "view_count") {
+        std::sort(videos.begin(), videos.end(), [](const Video& a, const Video& b) {
+            return a.view_count_raw > b.view_count_raw;
+        });
+    }
+
+    // Client-side duration filter.
+    if (filter_dur == "short") {
+        videos.erase(std::remove_if(videos.begin(), videos.end(),
+            [](const Video& v) { return v.duration_seconds <= 0 || v.duration_seconds >= 240; }),
+            videos.end());
+    } else if (filter_dur == "long") {
+        videos.erase(std::remove_if(videos.begin(), videos.end(),
+            [](const Video& v) { return v.duration_seconds <= 1200; }),
+            videos.end());
     }
 
     return videos;
@@ -208,10 +236,29 @@ DownloadOutcome YouTube::download_both(const std::string& video_id,
 // ═════════════════════════════════════════════════════════════════════════════
 #else
 
+// URL-encode a string for use in YouTube search URLs (yt-dlp with sp param).
+static std::string url_encode_query(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
+            out += static_cast<char>(c);
+        else {
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%%%02X", c);
+            out += hex;
+        }
+    }
+    return out;
+}
+
 std::vector<Video> YouTube::search(const std::string& query, int max_results,
-                                    const std::string& cookie_args) {
+                                    const std::string& cookie_args,
+                                    const std::string& sort_by,
+                                    const std::string& /* filter_type */,
+                                    const std::string& filter_dur) {
     std::vector<Video> videos;
-    Log::write("Searching: '%s' (max %d)%s", query.c_str(), max_results,
+    Log::write("Searching: '%s' (max %d, sort=%s)%s", query.c_str(), max_results,
+               sort_by.empty() ? "relevance" : sort_by.c_str(),
                cookie_args.empty() ? "" : " [auth]");
 
     std::string max_str = std::to_string(max_results);
@@ -221,11 +268,31 @@ std::vector<Video> YouTube::search(const std::string& query, int max_results,
         std::string tok;
         while (iss >> tok) args.push_back(tok);
     }
-    args.push_back("\"ytsearch" + max_str + ":" + query + "\"");
-    args.push_back("--flat-playlist");
-    args.push_back("-j");
-    args.push_back("--no-warnings");
-    args.push_back("--ignore-errors");
+
+    // YouTube search URL sp params for sort order (base64-encoded protobuf).
+    // When a sort is requested, use a full YouTube results URL so the YouTube
+    // API returns results in the requested order.
+    const char* sp = nullptr;
+    if      (sort_by == "date")       sp = "CAI=";
+    else if (sort_by == "view_count") sp = "CAM=";
+    else if (sort_by == "rating")     sp = "CAE=";
+
+    if (sp) {
+        std::string url = "https://www.youtube.com/results?search_query="
+                        + url_encode_query(query) + "&sp=" + url_encode_query(sp);
+        args.push_back(url);
+        args.push_back("--flat-playlist");
+        args.push_back("-j");
+        args.push_back("--max-downloads"); args.push_back(max_str);
+        args.push_back("--no-warnings");
+        args.push_back("--ignore-errors");
+    } else {
+        args.push_back("\"ytsearch" + max_str + ":" + query + "\"");
+        args.push_back("--flat-playlist");
+        args.push_back("-j");
+        args.push_back("--no-warnings");
+        args.push_back("--ignore-errors");
+    }
 
     std::string output = exec_ytdlp(args);
     if (output.empty()) { Log::write("yt-dlp returned empty output"); return videos; }
@@ -254,9 +321,11 @@ std::vector<Video> YouTube::search(const std::string& query, int max_results,
             v.url = safe_str("url", "https://www.youtube.com/watch?v=" + v.id);
             if (j.contains("is_live") && j["is_live"].is_boolean())
                 v.is_live = j["is_live"].get<bool>();
-            if (j.contains("view_count") && j["view_count"].is_number())
-                v.view_count = format_views(j["view_count"].get<long long>());
-            else v.view_count = "N/A";
+            if (j.contains("view_count") && j["view_count"].is_number()) {
+                auto raw = j["view_count"].get<long long>();
+                v.view_count     = format_views(raw);
+                v.view_count_raw = static_cast<int64_t>(raw);
+            } else v.view_count = "N/A";
             std::string raw_date = safe_str("upload_date");
             if (raw_date.size() == 8)
                 v.upload_date = raw_date.substr(0,4)+"-"+raw_date.substr(4,2)+"-"+raw_date.substr(6,2);
@@ -269,6 +338,18 @@ std::vector<Video> YouTube::search(const std::string& query, int max_results,
             Log::write("JSON error: %s", e.what());
         }
     }
+
+    // Client-side duration filter (short < 4 min, long > 20 min).
+    if (filter_dur == "short") {
+        videos.erase(std::remove_if(videos.begin(), videos.end(),
+            [](const Video& v) { return v.duration_seconds <= 0 || v.duration_seconds >= 240; }),
+            videos.end());
+    } else if (filter_dur == "long") {
+        videos.erase(std::remove_if(videos.begin(), videos.end(),
+            [](const Video& v) { return v.duration_seconds <= 1200; }),
+            videos.end());
+    }
+
     Log::write("Search returned %zu results", videos.size());
     return videos;
 }

@@ -255,20 +255,17 @@ bool InputHandler::handle(int ch, AppState& state) {
             return false;
         }
 
-        // Main content area
-        int start_y = 6, end_y = state.term_h - (state.show_status_bar ? 4 : 1);
-        if (my <= start_y || my >= end_y) return false;
-
-        // Sort menu is a floating overlay — consume clicks inside it here,
-        // before any content-area handling (handle_sort_menu's KEY_MOUSE case
-        // is never reached because getmouse() is consumed above).
+        // Sort menu is a floating overlay — handle it BEFORE the content-area
+        // bounds check, because it can render at any terminal row (centered).
+        // The KEY_MOUSE path in handle_sort_menu() is dead: getmouse() was
+        // already consumed above, so this is the only place to handle clicks.
         if (state.focus == Panel::SortMenu) {
             int pw   = std::min(56, state.term_w - 4);
             int ph   = 10;
             int px   = std::max(0, (state.term_w - pw) / 2);
             int py   = std::max(0, (state.term_h - ph) / 2);
             int half = pw / 2;
-            if (ev.y >= py + 2 && ev.y <= py + ph - 2) {
+            if (ev.y >= py + 2 && ev.y < py + ph - 1) {
                 int row = ev.y - (py + 2);
                 if (ev.x >= px && ev.x < px + half) {
                     if (row >= 0 && row < 4) {
@@ -290,20 +287,30 @@ bool InputHandler::handle(int ch, AppState& state) {
             return false;
         }
 
-        // Playlist list tab
-        if (state.active_tab == Tab::Playlists &&
-            (state.focus == Panel::PlaylistList || state.focus == Panel::Tabs)) {
+        // Main content area
+        int start_y = 6, end_y = state.term_h - (state.show_status_bar ? 4 : 1);
+        if (my <= start_y || my >= end_y) return false;
+
+        // Playlist list tab: fires for any click when on the Playlists tab and
+        // NOT inside a specific playlist (current_playlist_id non-empty means we
+        // are in PlaylistView, handled below).  Removing the focus restriction
+        // fixes the case where the user switched tabs via keyboard (focus stays
+        // on Search/Results) but then tries to click a playlist row.
+        if (state.active_tab == Tab::Playlists && state.current_playlist_id.empty()) {
             int row_idx = my - start_y - 3; // offset for header rows
             if (row_idx >= 0) {
-                state.selected_playlist = row_idx + state.playlist_scroll;
-                state.focus = Panel::PlaylistList;
-                // Click on the color dot column (x 2-3) cycles the tag color.
-                // Click anywhere else opens the playlist immediately — no second
-                // click required, matching keyboard Enter from PlaylistList.
-                if (mx <= 3)
-                    state.status_message = "__PLAYLIST_TAG__";
-                else
-                    state.status_message = "__OPEN_PLAYLIST__";
+                int max_idx = static_cast<int>(state.playlist_names.size()) - 1;
+                int idx = row_idx + state.playlist_scroll;
+                if (max_idx >= 0 && idx <= max_idx) {
+                    state.selected_playlist = idx;
+                    state.focus = Panel::PlaylistList;
+                    // Click on the color-dot column (x 0-3) cycles the tag.
+                    // Any other column opens the playlist immediately.
+                    if (mx <= 3)
+                        state.status_message = "__PLAYLIST_TAG__";
+                    else
+                        state.status_message = "__OPEN_PLAYLIST__";
+                }
             }
             return false;
         }
