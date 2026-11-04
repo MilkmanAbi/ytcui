@@ -14,7 +14,7 @@ struct WeOptions {
        write_subs = false, write_auto = false, list_subs = false,
        automatic = false, extract_audio = false, ignore_errors = false,
        no_cache = false, reverse = false, no_playlist = false, quiet = false,
-       mpv_json = false, live_from_start = false;
+       check_runtime = false, resolve_json = false, mpv_json = false, live_from_start = false;
   size_t limit = 1000, start = 1, end = 0;
   int record_seconds = 0;
   double section_start = -1, section_end = -1;
@@ -135,7 +135,10 @@ inline WeOptions we_options(int argc, char **argv) {
         o.targets.push_back(argv[i]);
       break;
     }
-    if (a == "--yt-dlp")
+    if (a == "--check-runtime") {
+      o.check_runtime = true;
+      continue;
+    } else if (a == "--yt-dlp")
       continue;
     if (a == "-p" || a == "--play")
       o.action = "play";
@@ -244,6 +247,9 @@ inline WeOptions we_options(int argc, char **argv) {
       o.section_end = ytwe::timestamp_seconds(value.substr(dash + 1));
       if (o.section_end <= o.section_start)
         throw std::runtime_error("section end must follow start");
+    } else if (a == "--resolve-json") {
+      o.resolve_json = true;
+      o.action = "play";
     } else if (a == "--mpv-args") {
       o.mpv_json = true;
       o.action = "play";
@@ -319,7 +325,7 @@ inline WeOptions we_options(int argc, char **argv) {
   }
   if (o.command == "notifications" && o.targets.empty())
     o.targets.push_back("notifications");
-  if (o.targets.empty())
+  if (o.targets.empty() && !o.check_runtime)
     throw std::runtime_error("an input URL, ID or query is required");
   if (!o.comment_options.max_pages)
     throw std::runtime_error("max-pages must be positive");
@@ -536,6 +542,24 @@ inline int we_video(WeOptions options, ytwe::Youtube &yt,
     }
     return 0;
   }
+  if (options.resolve_json) {
+    yjw::Writer w(false);
+    w.obj();
+    w.kv("video_url", manifest_only ? media->info.hls_url :
+         selected.video ? selected.video->url : selected.audio->url);
+    w.kv("audio_url", selected.video && selected.audio ? selected.audio->url : std::string{});
+    w.kv("user_agent", manifest_only ? media->ua :
+         selected.video ? selected.video->user_agent : selected.audio->user_agent);
+    w.kv("is_live", manifest_only || media->info.is_live_now);
+    w.key("heights").arr();
+    std::set<int, std::greater<int>> heights;
+    for (const auto& f : media->info.formats)
+      if (f.has_video && f.height > 0 && !f.url.empty()) heights.insert(f.height);
+    for (int height : heights) w.val(height);
+    w.end().end();
+    std::puts(w.str().c_str());
+    return 0;
+  }
   if (options.action == "play" || options.mpv_json) {
     auto args = manifest_only
                     ? mpv_args_hls(media->info.hls_url, options.mode,
@@ -679,6 +703,16 @@ inline int we_application(int argc, char **argv) {
   }
   try {
     auto options = we_options(argc, argv);
+    if (options.check_runtime) {
+      const auto script = ytwe::read_file(options.solver.directory / "yt.solver.lib.js") +
+          "\nObject.assign(globalThis, lib);\n" +
+          ytwe::read_file(options.solver.directory / "yt.solver.core.js") +
+          "\nif(typeof jsc !== 'function') throw Error('missing jsc'); console.log('ytcui-ejs-ready');\n";
+      if (ytwe::run_js(options.solver.runtime, script) != "ytcui-ejs-ready\n")
+        throw std::runtime_error("unexpected EJS runtime self-test output");
+      std::puts("EJS assets and Node runtime ready");
+      return 0;
+    }
     ytwe::Youtube yt;
     yt.cache = options.solver.cache;
     ytwe::manifest_cache.directory = options.solver.cache.directory;

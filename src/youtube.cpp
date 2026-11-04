@@ -29,6 +29,16 @@ bool YouTube::is_available() {
 #endif
 }
 
+bool YouTube::configure_cookies(const std::string& path) {
+#ifdef USE_YTCUIDL
+    auto& client = ytfast::InnertubeClient::get_instance();
+    client.clear_cookies();
+    return path.empty() || client.set_cookies_file(path);
+#else
+    return path.empty();
+#endif
+}
+
 void YouTube::shutdown() {
 #ifdef USE_YTCUIDL
     // Stop and join the background prefetch worker so it cannot run during

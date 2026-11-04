@@ -9,6 +9,8 @@
 #include <ctime>
 #include <cstdlib>
 #include <random>
+#include <filesystem>
+#include "atomic_file.h"
 
 namespace ytui {
 
@@ -52,6 +54,7 @@ struct Playlist {
 
 class Library {
 public:
+    std::string take_save_error() { auto error = save_error_; save_error_.clear(); return error; }
     void load() {
         ensure_dir();
         load_bookmarks(data_dir() + "/library.json");
@@ -60,6 +63,7 @@ public:
     }
 
     void save() const {
+        save_error_.clear();
         ensure_dir();
         save_bookmarks(data_dir() + "/library.json");
         save_history(data_dir() + "/history.json");
@@ -303,6 +307,7 @@ public:
     }
 
 private:
+    mutable std::string save_error_;
     std::vector<BookmarkEntry> bookmarks_;
     std::vector<VideoEntry> history_;
     std::vector<Playlist> playlists_;
@@ -326,8 +331,8 @@ private:
 
     static void ensure_dir() {
         std::string dir = data_dir();
-        std::string cmd = "mkdir -p '" + dir + "' 2>/dev/null";
-        int r = system(cmd.c_str()); (void)r;
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
     }
 
     // ─── Load/Save ──────────────────────────────────────────────────────────────
@@ -352,15 +357,13 @@ private:
     }
 
     void save_bookmarks(const std::string& path) const {
-        std::ofstream f(path);
-        if (!f.is_open()) return;
         json j = json::array();
         for (const auto& e : bookmarks_) {
             j.push_back({{"id", e.id}, {"title", e.title}, {"channel", e.channel},
                          {"channel_id", e.channel_id}, {"type", e.type},
                          {"timestamp", e.timestamp}});
         }
-        f << j.dump(2);
+        atomic_write(path, j.dump(2), &save_error_);
     }
 
     void load_history(const std::string& path) {
@@ -384,15 +387,13 @@ private:
     }
 
     void save_history(const std::string& path) const {
-        std::ofstream f(path);
-        if (!f.is_open()) return;
         json j = json::array();
         for (const auto& v : history_) {
             j.push_back({{"id", v.id}, {"title", v.title}, {"channel", v.channel},
                          {"channel_id", v.channel_id}, {"thumbnail_url", v.thumbnail_url},
                          {"duration_seconds", v.duration_seconds}, {"timestamp", v.timestamp}});
         }
-        f << j.dump(2);
+        atomic_write(path, j.dump(2), &save_error_);
     }
 
     void load_playlists(const std::string& path) {
@@ -428,8 +429,6 @@ private:
     }
 
     void save_playlists(const std::string& path) const {
-        std::ofstream f(path);
-        if (!f.is_open()) return;
         json j = json::array();
         for (const auto& pl : playlists_) {
             json videos = json::array();
@@ -442,7 +441,7 @@ private:
                          {"created_at", pl.created_at}, {"updated_at", pl.updated_at},
                          {"color_tag", pl.color_tag}});
         }
-        f << j.dump(2);
+        atomic_write(path, j.dump(2), &save_error_);
     }
 };
 

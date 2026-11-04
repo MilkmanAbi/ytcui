@@ -253,6 +253,7 @@ inline std::vector<ThumbnailInfo> thumbnail_candidates(const std::string& id) {
 // ---------------------------------------------------------------------------
 class UrlCache {
 public:
+    void clear() { std::lock_guard<std::mutex> lk(mu_); cache_.clear(); }
     bool get(const std::string& id, VideoInfo& out) {
         std::lock_guard<std::mutex> lk(mu_);
         auto it = cache_.find(id);
@@ -366,6 +367,12 @@ public:
     // WEB session -- but it is *not* a PO token: cookies alone don't produce
     // one (see fetch_po_token_from_provider). Returns false if the file
     // couldn't be read or had no youtube/google cookies in it.
+    void clear_cookies() {
+        std::lock_guard<std::mutex> lk(vd_mu_);
+        if (!cookie_header_.empty()) cache_.clear();
+        cookie_header_.clear(); sapisid_.clear();
+    }
+
     bool set_cookies_file(const std::string& path) {
         std::ifstream f(path);
         if (!f) return false;
@@ -397,6 +404,7 @@ public:
         }
         if (cookies.empty()) return false;
         std::lock_guard<std::mutex> lk(vd_mu_);
+        if (cookie_header_ != cookies) cache_.clear();
         cookie_header_ = std::move(cookies);
         sapisid_ = std::move(sapisid);
         return true;

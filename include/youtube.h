@@ -42,6 +42,7 @@ public:
     // Stop any background work (prefetch worker) before process teardown.
     // Safe to call on either backend; a no-op for the yt-dlp backend.
     static void shutdown();
+    static bool configure_cookies(const std::string& path);
 
     // Download both an MP4 (best available video+audio, muxed) and an MP3
     // (audio only) for a video into out_dir. BLOCKING — this does real

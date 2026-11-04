@@ -14,13 +14,16 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <thread>
+#include <functional>
 #include <sys/types.h>
 
 namespace ytui {
 
 class App {
 public:
-    App(Theme theme);
+    using SbFetch = std::function<ytcui::sb::Segments(const std::string&, const std::string&)>;
+    App(Theme theme, SbFetch fetch = {});
     ~App();
     int run();
     void force_cleanup();
@@ -31,6 +34,8 @@ public:
     void set_ui_mode(const std::string& mode);
 
 private:
+    friend struct AppTestAccess;
+    SbFetch sb_fetch_;
     AppState state_;
     TUI      tui_;
     YouTube  youtube_;
@@ -48,6 +53,7 @@ private:
     ytcui::sb::Segments     sb_segs_;
     std::mutex              sb_mutex_;
     std::atomic<bool>       sb_fetching_{false};
+    std::thread             sb_worker_;
     std::string             sb_video_id_;  // video_id of currently-loaded SB data
     std::chrono::steady_clock::time_point sb_last_seek_{};  // seek-storm latch
 
@@ -91,7 +97,7 @@ private:
     void tick_timer();              // called each frame; pauses mpv when due
     void start_play(const Video& v, PlayMode mode);     // single entry for all playback starts
     void sync_mode_transition(int from, int to);         // called when ui_mode changes
-    void start_sb_fetch(const std::string& video_id);  // launch background fetch
+    bool start_sb_fetch(const std::string& video_id);  // launch background fetch
     void tick_sponsorblock();       // called each frame; checks skip and updates summary
 };
 

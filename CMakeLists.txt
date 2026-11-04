@@ -9,6 +9,11 @@ project(ytcui VERSION ${YTCUI_VERSION_STR} LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+option(YTCUI_SANITIZE "Enable AddressSanitizer for runtime regression tests" OFF)
+if(YTCUI_SANITIZE)
+    add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address)
+endif()
 
 # ── Find dependencies ─────────────────────────────────────────────────────────
 find_package(OpenSSL REQUIRED)
@@ -30,6 +35,7 @@ set(APP_SRCS
     src/mpv_ipc.cpp
     src/player.cpp
     src/player_we.cpp
+    src/player_resolve.cpp
     src/termcaps.cpp
     src/tui.cpp
     src/youtube.cpp
@@ -147,6 +153,9 @@ add_core_test(tests/test_queue.cpp)
 # ── test_player_we: proves ytcui-we backend reaches real resolver ─────────────
 add_executable(test_player_we
     tests/test_player_we.cpp
+    src/player.cpp
+    src/player_resolve.cpp
+    src/mpv_ipc.cpp
     src/player_we.cpp
     ${CORE_SRCS}
     ${QRCODEGEN_SRCS}
@@ -158,12 +167,32 @@ target_compile_definitions(test_player_we PRIVATE
     USE_YTCUIDL)
 target_link_libraries(test_player_we PRIVATE ${CORE_TEST_LIBS})
 target_compile_options(test_player_we PRIVATE ${CORE_TEST_FLAGS})
-# Exit 77 = ctest SKIP (binary not found in environment); 0 = pass; 1 = fail
-add_test(NAME test_player_we COMMAND test_player_we)
-set_tests_properties(test_player_we PROPERTIES SKIP_RETURN_CODE 77)
+add_test(NAME test_player_we COMMAND test_player_we $<TARGET_FILE:ytcui-we>)
+
 
 # ── ytcui-we companion executable ─────────────────────────────────────────────
 # Built as a completely separate binary to isolate its yj.h from ytcui-dl's yj.h
 # (ODR: both define namespace yj with differing implementations).
 # ytcui is a subprocess caller; it never links against ytcui-we headers.
 add_subdirectory(third_party/ytcui-we-src)
+set_target_properties(ytcui-we PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+add_dependencies(ytcui ytcui-we)
+add_dependencies(test_player_we ytcui-we)
+set_tests_properties(test_player_we PROPERTIES ENVIRONMENT "YTCUI_WE_BINARY=$<TARGET_FILE:ytcui-we>")
+add_test(NAME companion_smoke COMMAND $<TARGET_FILE:ytcui-we> --help)
+install(TARGETS ytcui RUNTIME DESTINATION bin)
+
+add_executable(test_runtime tests/test_runtime.cpp src/config.cpp src/core/proc.cpp)
+target_include_directories(test_runtime PRIVATE ${CORE_TEST_INCLUDE_DIRS})
+target_link_libraries(test_runtime PRIVATE ${CORE_TEST_LIBS})
+add_test(NAME test_runtime COMMAND test_runtime)
+
+
+set(APP_TEST_SRCS ${APP_SRCS})
+list(REMOVE_ITEM APP_TEST_SRCS src/main.cpp)
+add_executable(test_app_lifetime tests/test_app_lifetime.cpp ${APP_TEST_SRCS} ${CORE_SRCS} ${QRCODEGEN_SRCS})
+target_include_directories(test_app_lifetime PRIVATE ${YTCUI_INCLUDE_DIRS})
+target_compile_definitions(test_app_lifetime PRIVATE YTUI_VERSION="${YTCUI_VERSION_STR}" YTCUI_VERSION="${YTCUI_VERSION_STR}" USE_YTCUIDL)
+target_link_libraries(test_app_lifetime PRIVATE ${CORE_TEST_LIBS} ${CURSES_LIBRARIES})
+add_test(NAME test_app_lifetime COMMAND test_app_lifetime)
+add_test(NAME installed_bundle COMMAND ${CMAKE_COMMAND} "-DBUILD_DIR=${CMAKE_BINARY_DIR}" -P ${CMAKE_SOURCE_DIR}/tests/installed_bundle.cmake)

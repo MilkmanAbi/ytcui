@@ -1,13 +1,16 @@
 name: Auto-tag on VERSION change
 
 # Pushes to main that change VERSION automatically create and push the
-# corresponding v<VERSION> tag, which in turn triggers release.yml to
-# build and publish release artifacts.
+# corresponding v<VERSION> tag, then explicitly calls release.yml.
+# GITHUB_TOKEN pushes do not trigger another push workflow.
 
 on:
   push:
     branches: [main]
     paths: [VERSION]
+
+permissions:
+  contents: read
 
 jobs:
   tag:
@@ -15,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      created: ${{ steps.check.outputs.exists == 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,3 +50,12 @@ jobs:
           git tag -a "${{ steps.ver.outputs.tag }}" \
                   -m "Release ${{ steps.ver.outputs.tag }}"
           git push origin "${{ steps.ver.outputs.tag }}"
+
+  release:
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}

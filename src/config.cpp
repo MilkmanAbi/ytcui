@@ -1,4 +1,6 @@
 #include "config.h"
+#include "atomic_file.h"
+#include <filesystem>
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <cstdlib>
@@ -66,6 +68,9 @@ static int parse_key_name(const std::string& name) {
     if (name == "left")    return 260;  // KEY_LEFT
     if (name == "right")   return 261;  // KEY_RIGHT
     if (name.size() == 1)  return (unsigned char)name[0];
+    if (name.rfind("key", 0) == 0) {
+        try { return std::stoi(name.substr(3)); } catch (...) {}
+    }
     return -1;
 }
 
@@ -110,6 +115,41 @@ void Config::load() {
         if (j.contains("preferred_height") && j["preferred_height"].is_number_integer())
             preferred_height = j["preferred_height"].get<int>();
 
+        if (j.contains("backend_auto_failover") && j["backend_auto_failover"].is_boolean())
+            backend_auto_failover = j["backend_auto_failover"].get<bool>();
+        if (j.contains("resume_playback") && j["resume_playback"].is_boolean())
+            resume_playback = j["resume_playback"].get<bool>();
+        if (j.contains("loop_video") && j["loop_video"].is_boolean())
+            loop_video = j["loop_video"].get<bool>();
+        if (j.contains("streamlined_loop") && j["streamlined_loop"].is_boolean())
+            streamlined_loop = j["streamlined_loop"].get<bool>();
+        if (j.contains("autoplay") && j["autoplay"].is_string())
+            autoplay = j["autoplay"].get<std::string>();
+        if (j.contains("loop_playlist") && j["loop_playlist"].is_boolean())
+            loop_playlist = j["loop_playlist"].get<bool>();
+        if (j.contains("sleep_seconds") && j["sleep_seconds"].is_number_integer())
+            sleep_seconds = j["sleep_seconds"].get<int>();
+        if (j.contains("sponsorblock") && j["sponsorblock"].is_boolean())
+            sponsorblock = j["sponsorblock"].get<bool>();
+        if (j.contains("sponsorblock_categories") && j["sponsorblock_categories"].is_string())
+            sponsorblock_categories = j["sponsorblock_categories"].get<std::string>();
+        if (j.contains("cookies_file") && j["cookies_file"].is_string())
+            cookies_file = j["cookies_file"].get<std::string>();
+        if (j.contains("ytdlp_path") && j["ytdlp_path"].is_string())
+            ytdlp_path = j["ytdlp_path"].get<std::string>();
+        if (j.contains("mpv_path") && j["mpv_path"].is_string())
+            mpv_path = j["mpv_path"].get<std::string>();
+        if (j.contains("prefer_audio") && j["prefer_audio"].is_boolean())
+            prefer_audio = j["prefer_audio"].get<bool>();
+        if (j.contains("filter_type") && j["filter_type"].is_string())
+            filter_type = j["filter_type"].get<std::string>();
+        if (j.contains("filter_dur") && j["filter_dur"].is_string())
+            filter_dur = j["filter_dur"].get<std::string>();
+        if (j.contains("backend") && j["backend"].is_number_integer()) {
+            int value = j["backend"].get<int>();
+            if (value >= 0 && value <= 2) backend = static_cast<BackendKind>(value);
+        }
+
         // Per-element color overrides: "colors": { "accent": 198, "title": 213 }
         if (j.contains("colors") && j["colors"].is_object()) {
             custom_colors.clear();
@@ -145,18 +185,18 @@ void Config::load() {
             bind("bottom",      keys.bottom);
             bind("sort",        keys.sort);
             bind("new_playlist", keys.new_playlist);
+            bind("timer", keys.timer);
         }
     } catch (...) {}
 }
 
 void Config::save() {
     std::string dir  = config_dir();
-    std::string cmd  = "mkdir -p '" + dir + "'";
-    int r = system(cmd.c_str()); (void)r;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) return;
 
     std::string path = dir + "/config.json";
-    std::ofstream f(path);
-    if (!f.is_open()) return;
 
     json j = {
         {"max_results",    max_results},
@@ -172,6 +212,23 @@ void Config::save() {
         {"show_hints",      show_hints},
         {"preferred_height", preferred_height}
     };
+
+    j["backend_auto_failover"] = backend_auto_failover;
+    j["resume_playback"] = resume_playback;
+    j["loop_video"] = loop_video;
+    j["streamlined_loop"] = streamlined_loop;
+    j["autoplay"] = autoplay;
+    j["loop_playlist"] = loop_playlist;
+    j["sleep_seconds"] = sleep_seconds;
+    j["sponsorblock"] = sponsorblock;
+    j["sponsorblock_categories"] = sponsorblock_categories;
+    j["cookies_file"] = cookies_file;
+    j["ytdlp_path"] = ytdlp_path;
+    j["mpv_path"] = mpv_path;
+    j["prefer_audio"] = prefer_audio;
+    j["filter_type"] = filter_type;
+    j["filter_dur"] = filter_dur;
+    j["backend"] = static_cast<int>(backend);
 
     // Only write colors section if there are custom overrides
     if (!custom_colors.empty()) {
@@ -198,11 +255,14 @@ void Config::save() {
         keys_obj["bottom"]       = key_config_name(keys.bottom);
         keys_obj["sort"]         = key_config_name(keys.sort);
         keys_obj["new_playlist"] = key_config_name(keys.new_playlist);
+        keys_obj["timer"] = key_config_name(keys.timer);
+        keys_obj["select"] = key_config_name(keys.select);
+        keys_obj["back"] = key_config_name(keys.back);
         keys_obj["quit"]         = key_config_name(keys.quit);
         j["keys"] = keys_obj;
     }
 
-    f << j.dump(2);
+    atomic_write(path, j.dump(2));
 }
 
 } // namespace ytui

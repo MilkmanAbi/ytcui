@@ -1,5 +1,5 @@
 #include "player.h"
-#include "player_we.h"
+#include "player_resolve.h"
 #include "log.h"
 #include <cstring>
 #include <algorithm>
@@ -14,35 +14,6 @@
 #if defined(__linux__)
 #include <sys/prctl.h>
 #endif
-
-// ─── ytcui-dl backend ──────────────────────────────────────────────────────────
-#ifdef USE_YTCUIDL
-#include "ytcui-dl/ytfast.h"
-
-// Extract video ID from a full YouTube URL or bare 11-char ID
-static std::string extract_video_id(const std::string& url) {
-    if (url.size() == 11 && url.find('/') == std::string::npos
-        && url.find('.') == std::string::npos)
-        return url;
-    auto vp = url.find("v=");
-    if (vp != std::string::npos) {
-        auto id = url.substr(vp + 2, 11);
-        if (id.size() == 11) return id;
-    }
-    auto bp = url.find("youtu.be/");
-    if (bp != std::string::npos) return url.substr(bp + 9, 11);
-    return url;
-}
-
-// Cache of formats from the most recent resolve — used by resolution_rungs().
-static std::vector<ytfast::StreamFormat> g_last_formats_;
-#endif  // USE_YTCUIDL
-
-// ─── ytcui-we backend ──────────────────────────────────────────────────────────
-// ytcui-we yj.h differs from ytcui-dl yj.h — linking both into the same binary
-// causes ODR violations. The fix: ytcui-we is a separate executable; ytcui calls
-// it via subprocess (player_we.cpp) with --mpv-json and parses its output.
-// No ytcui-we headers are included anywhere in the ytcui binary.
 
 namespace ytui {
 
@@ -59,10 +30,8 @@ bool Player::is_available() {
 
 void Player::play(const std::string& url, const std::string& title, PlayMode mode) {
     stop();
-    if (mode == PlayMode::Video)
-        play_direct(url, title);
-    else
-        play_piped(url, title, mode);
+    rungs_.clear();
+    play_direct(url, title, mode);
 }
 
 void Player::stop() {
@@ -253,7 +222,7 @@ static bool spawn_mpv(const std::vector<std::string>& args, pid_t& out_pid, bool
     if (pid == 0) {
         close(exec_pipe[0]);
         child_setup(log_to_file);
-        execvp("mpv", (char* const*)argv.data());
+        execvp(full_args.front().c_str(), (char* const*)argv.data());
         int err = errno;
         ssize_t w = write(exec_pipe[1], &err, sizeof(err)); (void)w;
         _exit(127);
@@ -277,377 +246,45 @@ static bool spawn_mpv(const std::vector<std::string>& args, pid_t& out_pid, bool
     }
 }
 
-// ─── StreamURLs ───────────────────────────────────────────────────────────────
-
-struct StreamURLs {
-    std::string video_url;   // muxed (video+audio) or video-only stream URL
-    std::string audio_url;   // only set when video_url is video-only adaptive
-    std::string user_agent;  // client UA that signed video_url/audio_url (ytcui-dl backend)
-    bool ok = false;
-};
-
-// ═════════════════════════════════════════════════════════════════════════════
-// ytcui-dl resolve_stream_urls
-//
-// v2 flips this from v1: select_best_video_stream() now prefers the best
-// ADAPTIVE video-only track (up to 1080p+), falling back to a muxed
-// progressive stream (capped around 360p) only if no adaptive video exists.
-// The old "always force muxed" behavior was working around a misdiagnosis —
-// v1's client returned SABR responses whose adaptive formats carry no URL at
-// all, which looked like "adaptive gets 403'd" but wasn't; v2's client chain
-// (VISIONOS/ANDROID_VR/ANDROID/IOS) gets real, fetchable adaptive URLs, so
-// forcing muxed was silently capping every video's quality at 360p.
-//
-// Video mode: adaptive video-only URL to mpv, muxed audio (or a separate
-// adaptive audio track) supplied via --audio-file when video_url has no
-// audio of its own.
-// Audio mode: play_piped() resolves audio independently (see below) — it
-// does not call this function.
-//
-// is_muxed() tells us whether video_url already carries audio; if not, we
-// fetch a separate audio_url and mpv muxes them live via --audio-file.
-// ═════════════════════════════════════════════════════════════════════════════
-
-#ifdef USE_YTCUIDL
-
-static StreamURLs resolve_stream_urls(const std::string& youtube_url, int preferred_height = 0) {
-    StreamURLs result;
-    std::string video_id = extract_video_id(youtube_url);
-    Log::write("[ytcui-dl] resolve id=%s h=%d", video_id.c_str(), preferred_height);
-
-    try {
-        // get_stream_formats() uses the URL cache — if search already prefetched
-        // this video, this call is a hashmap lookup (~0.005ms). Otherwise ~100ms.
-        auto info = ytfast::InnertubeClient::get_instance().get_stream_formats(video_id);
-
-        if (info.formats.empty()) {
-            Log::write("[ytcui-dl] resolve: no formats returned");
-            return result;
-        }
-
-        // Cache formats for the resolution ladder (resolution_rungs()).
-        g_last_formats_ = info.formats;
-
-        // preferred_height == 0 → best available; >0 → cap at that height.
-        std::string video_url = ytfast::InnertubeClient::select_best_video_stream(
-            info.formats, preferred_height);
-
-        if (video_url.empty()) {
-            Log::write("[ytcui-dl] resolve: no usable video stream");
-            return result;
-        }
-
-        result.video_url = video_url;
-
-        // A format URL is signed for the specific InnerTube client that
-        // returned it (VISIONOS / ANDROID_VR / ANDROID / IOS — v2 tries them
-        // in a chain and the winner varies per video), so mpv must present
-        // that exact client's User-Agent when it fetches the URL or the CDN
-        // 403s it. There is no single hardcoded UA that works for every
-        // video any more (the old ytfast::ANDROID_UA constant is gone).
-        result.user_agent = info.client_ua ? info.client_ua : "";
-
-        // If mpv got a video-only adaptive URL (rare fallback), also provide
-        // a muxed stream as the audio source. mpv's --audio-file plays the
-        // audio track from that URL while discarding the video track.
-        bool is_muxed = ytfast::InnertubeClient::is_muxed(info.formats, video_url);
-        if (!is_muxed) {
-            // Muxed stream as audio source — guaranteed to have audio,
-            // guaranteed to work (no DASH 403 risk).
-            result.audio_url = ytfast::InnertubeClient::select_best_audio_stream(
-                info.formats);
-            Log::write("[ytcui-dl] resolve: video-only adaptive + muxed-audio fallback");
-        } else {
-            Log::write("[ytcui-dl] resolve: muxed stream (video+audio)");
-        }
-
-        Log::write("[ytcui-dl] resolve: video=%.80s...", video_url.c_str());
-        result.ok = true;
-
-    } catch (const std::exception& e) {
-        Log::write("[ytcui-dl] resolve error: %s", e.what());
-    }
-
-    return result;
-}
-
-#else  // yt-dlp backend
-
-static StreamURLs resolve_stream_urls(const std::string& youtube_url) {
-    StreamURLs result;
-    std::string cmd =
-        "yt-dlp -g --no-warnings --no-playlist "
-        "-f 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best' "
-        "'" + youtube_url + "' 2>/dev/null";
-
-    Log::write("resolve: %s", cmd.c_str());
-    FILE* p = popen(cmd.c_str(), "r");
-    if (!p) { Log::write("resolve: popen failed: %s", strerror(errno)); return result; }
-
-    char buf[8192];
-    std::string line1, line2;
-    if (fgets(buf, sizeof(buf), p)) {
-        line1 = buf;
-        while (!line1.empty() && (line1.back()=='\n'||line1.back()=='\r')) line1.pop_back();
-    }
-    if (fgets(buf, sizeof(buf), p)) {
-        line2 = buf;
-        while (!line2.empty() && (line2.back()=='\n'||line2.back()=='\r')) line2.pop_back();
-    }
-    pclose(p);
-
-    if (line1.empty()) { Log::write("resolve: no output"); return result; }
-
-    if (!line2.empty()) {
-        result.video_url = line1;
-        result.audio_url = line2;
-        Log::write("resolve: video=%.80s...", line1.c_str());
-        Log::write("resolve: audio=%.80s...", line2.c_str());
-    } else {
-        result.video_url = line1;
-        Log::write("resolve: combined=%.80s...", line1.c_str());
-    }
-    result.ok = true;
-    return result;
-}
-
-#endif  // USE_YTCUIDL
-
-// ─── play_piped: audio-only modes ────────────────────────────────────────────
-//
-// ytcui-dl path:
-//   Resolves the muxed stream URL directly via the InnerTube singleton
-//   (cached <0.01ms if search already prefetched it, cold ~100ms).
-//   Hands the URL to mpv with --no-video — mpv decodes the video container
-//   but only plays the audio track. No yt-dlp process, no piping, no delay.
-//
-// yt-dlp path:
-//   Spawns yt-dlp, pipes its stdout directly into mpv stdin.
-
+// All modes resolve through the same runtime backend dispatch.
 void Player::play_piped(const std::string& url, const std::string& title, PlayMode mode) {
-    std::string vol = vol_flag(opts_.volume);
-
-#ifdef USE_YTCUIDL
-
-    std::string video_id = extract_video_id(url);
-    std::string stream_url, user_agent;
-
-    try {
-        // get_stream_formats() uses the same URL cache as resolve_stream_urls()
-        // (a hashmap lookup if search/prefetch already warmed it). We need the
-        // full VideoInfo, not just yt_best_audio()'s bare URL, because the
-        // format URL is signed for one specific InnerTube client and mpv must
-        // present that exact client's User-Agent (info.client_ua) or the CDN
-        // 403s it — there is no single hardcoded UA that works for every video.
-        //
-        // select_best_audio_stream() now prefers the best adaptive audio-only
-        // track (higher quality than the old muxed-only fallback): v2's
-        // client chain (VISIONOS/ANDROID_VR/ANDROID/IOS) returns real,
-        // fetchable adaptive URLs — the old "adaptive audio 403s" belief was a
-        // misdiagnosis of SABR responses carrying no URL at all, not of
-        // adaptive audio being blocked. It still falls back to muxed
-        // automatically if no adaptive audio track exists for this video.
-        auto info = ytfast::InnertubeClient::get_instance().get_stream_formats(video_id);
-        g_last_formats_ = info.formats;
-        stream_url = ytfast::InnertubeClient::select_best_audio_stream(info.formats);
-        user_agent = info.client_ua ? info.client_ua : "";
-        Log::write("[ytcui-dl] play_piped: resolved audio stream (len=%zu)", stream_url.size());
-    } catch (const std::exception& e) {
-        Log::write("[ytcui-dl] play_piped: resolve failed: %s", e.what());
-        return;
-    }
-
-    if (stream_url.empty()) {
-        Log::write("[ytcui-dl] play_piped: empty stream url — aborting");
-        return;
-    }
-
-    // mpv args for audio-only playback from a muxed (video+audio) stream URL.
-    // --no-video:    discard video track, play only audio
-    // --ytdl=no:     we provide a direct CDN URL, don't let mpv call yt-dlp
-    // --user-agent:  the exact client UA that signed this URL (see above)
-    std::vector<std::string> args = {
-        "mpv",
-        "--no-video",
-        "--no-terminal",
-        vol,
-        "--ytdl=no",
-        std::string("--user-agent=") + user_agent,
-    };
-
-    if (!opts_.no_cache) {
-        args.push_back("--audio-buffer=2");
-        args.push_back("--cache=yes");
-        args.push_back("--demuxer-max-bytes=50M");
-    } else {
-        args.push_back("--cache=no");
-    }
-
-    args.push_back("--audio-pitch-correction=yes");
-    if (opts_.no_hardware_accel) args.push_back("--hwdec=no");
-    if (mode == PlayMode::AudioLoop) args.push_back("--loop=inf");
-
-    args.push_back(stream_url);
-
-    Log::write("[ytcui-dl] play_piped: mpv --no-video (muxed stream, direct URL)");
-
-    std::string sock = ipc_.init_socket();
-    if (spawn_mpv(args, mpv_pid_, Log::is_logdump(), sock)) {
-        playing_       = true;
-        current_title_ = title;
-        current_volume_ = opts_.volume;
-        ipc_.try_connect();   // may not be ready yet; tick() retries each frame
-        Log::write("[ytcui-dl] play_piped pid=%d ipc=%s", mpv_pid_, ipc_.connected() ? "ok" : "pending");
-    }
-
-#else  // yt-dlp backend: pipe yt-dlp | mpv
-
-    std::string ytdlp_cmd =
-        "yt-dlp --no-warnings --no-playlist "
-        "-f 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio' "
-        "--audio-quality 0 "
-        "-o - '" + url + "'";
-
-    std::string mpv_cmd = "mpv --no-video --no-terminal " + vol;
-    if (!opts_.no_cache)
-        mpv_cmd += " --audio-buffer=2 --cache=yes --demuxer-max-bytes=50M";
-    else
-        mpv_cmd += " --cache=no";
-    mpv_cmd += " --audio-pitch-correction=yes";
-    if (opts_.no_hardware_accel) mpv_cmd += " --hwdec=no";
-    if (mode == PlayMode::AudioLoop) mpv_cmd += " --loop=inf";
-    mpv_cmd += " -";
-
-    std::string cmd = ytdlp_cmd + " | " + mpv_cmd;
-    Log::write("Piped play: %s", cmd.c_str());
-
-    pid_t pid = fork();
-    if (pid == 0) {
-        child_setup(Log::is_logdump());
-        execlp("sh", "sh", "-c", cmd.c_str(), nullptr);
-        _exit(127);
-    } else if (pid > 0) {
-        usleep(10000);
-        mpv_pid_       = pid;
-        playing_       = true;
-        current_title_ = title;
-        current_volume_ = opts_.volume;
-        // yt-dlp pipe path: mpv is a child of sh, IPC socket path
-        // would need to be injected into the shell command. Skip IPC
-        // for the legacy path — SIGSTOP fallback still works.
-        Log::write("Piped play pid=%d", pid);
-    } else {
-        Log::write("fork failed: %s", strerror(errno));
-    }
-
-#endif  // USE_YTCUIDL
+    play_direct(url, title, mode);
 }
 
-// ─── play_direct: video mode ──────────────────────────────────────────────────
-//
-// ytcui-dl path:
-//   resolve_stream_urls() returns the best adaptive video URL (or a muxed
-//   fallback). mpv receives it directly with --ytdl=no and the exact client
-//   UA that signed it. --audio-file supplies a separate audio track unless
-//   the video URL is already muxed.
-//
-// yt-dlp path:
-//   yt-dlp resolves bestvideo+bestaudio, gives us two URLs. Falls back to
-//   --ytdl=yes if that fails.
-
-void Player::play_direct(const std::string& url, const std::string& title) {
-    std::string vol = vol_flag(opts_.volume);
-    StreamURLs streams;
-    if (opts_.backend == BackendKind::YtcuiWe) {
-        // Subprocess adapter: no ytcui-we headers in this binary (ODR isolation).
-        try {
-            auto wi = we_resolve(url, opts_.preferred_height, opts_.cookies_file);
-            streams.video_url   = wi.video_url;
-            streams.audio_url   = wi.audio_url;
-            streams.user_agent  = wi.user_agent;
-            streams.ok          = true;
-        } catch (const std::exception& e) {
-            Log::write("[ytcui-we] resolve failed: %s — falling back to ytcui-dl", e.what());
-#ifdef USE_YTCUIDL
-            streams = resolve_stream_urls(url, opts_.preferred_height);
-#endif
-        }
-    } else {
-#ifdef USE_YTCUIDL
-        streams = resolve_stream_urls(url, opts_.preferred_height);
-#endif
+void Player::play_direct(const std::string& url, const std::string& title, PlayMode mode) {
+    ResolvedStreams streams;
+    rungs_.clear();
+    try { streams = resolve_playback(url, mode, opts_); }
+    catch (const std::exception& error) {
+        Log::write("Playback failed: %s", error.what());
+        return;
     }
-
-    std::vector<std::string> args = {
-        "mpv",
-        "--force-window=yes",
-        "--no-terminal",
-        vol,
-        "--geometry=854x480",
-        "--autofit-larger=70%",
-        "--autofit-smaller=640x360",
-        "--title=" + title,
-    };
-
-    if (streams.ok) {
-        args.push_back("--ytdl=no");
-        if (!opts_.no_cache) {
-            args.push_back("--cache=yes");
-            args.push_back("--demuxer-max-bytes=100M");
-        } else {
-            args.push_back("--cache=no");
-        }
-        if (opts_.no_hardware_accel) {
-            // Disable hardware DECODING only. Do NOT set --vo=libmpv: that is
-            // mpv's embedding render API, not a standalone video output, and
-            // with --force-window it breaks or blanks the video window. The
-            // default vo (gpu) is correct; --hwdec=no alone is the right knob.
-            args.push_back("--hwdec=no");
-        }
-#ifdef USE_YTCUIDL
-        // The exact client UA that signed streams.video_url/audio_url (see
-        // resolve_stream_urls()) — required for CDN access on both muxed and
-        // adaptive streams, and no longer a single constant across all videos.
-        if (!streams.user_agent.empty())
-            args.push_back("--user-agent=" + streams.user_agent);
-#endif
-        args.push_back(streams.video_url);
-        // audio_url only set when video_url is video-only adaptive (rare fallback)
-        if (!streams.audio_url.empty())
-            args.push_back("--audio-file=" + streams.audio_url);
-
-        Log::write("Direct play (fast): vol=%d backend=%s",
-                   opts_.volume,
-                   opts_.backend == BackendKind::YtcuiWe ? "ytcui-we" :
-                   opts_.backend == BackendKind::YtcuiDl ? "ytcui-dl" : "yt-dlp");
+    rungs_ = streams.rungs;
+    std::vector<std::string> args{opts_.mpv_path, "--no-terminal", vol_flag(opts_.volume), "--ytdl=no",
+                                  "--title=" + title};
+    if (mode == PlayMode::Video) {
+        args.insert(args.end(), {"--force-window=yes", "--geometry=854x480",
+                                 "--autofit-larger=70%", "--autofit-smaller=640x360"});
     } else {
-        // Fallback: let mpv use its built-in yt-dlp integration
-        Log::write("Direct play (slow fallback --ytdl=yes): %s", url.c_str());
-        args.push_back("--ytdl=yes");
-        args.push_back("--ytdl-format=bestvideo[height<=1080]+bestaudio/best[height<=1080]/best");
-        if (!opts_.no_cache) {
-            args.push_back("--cache=yes");
-            args.push_back("--demuxer-max-bytes=100M");
-        } else {
-            args.push_back("--cache=no");
-        }
-        if (opts_.no_hardware_accel) {
-            // Disable hardware DECODING only. Do NOT set --vo=libmpv: that is
-            // mpv's embedding render API, not a standalone video output, and
-            // with --force-window it breaks or blanks the video window. The
-            // default vo (gpu) is correct; --hwdec=no alone is the right knob.
-            args.push_back("--hwdec=no");
-        }
-        args.push_back(url);
+        args.insert(args.end(), {"--no-video", "--audio-pitch-correction=yes"});
+        if (mode == PlayMode::AudioLoop) args.push_back("--loop=inf");
     }
-
+    if (opts_.no_hardware_accel) args.push_back("--hwdec=no");
+    args.push_back(opts_.no_cache ? "--cache=no" : "--cache=yes");
+    if (!opts_.no_cache) args.push_back("--demuxer-max-bytes=100M");
+    if (!streams.user_agent.empty()) args.push_back("--user-agent=" + streams.user_agent);
+    if (!streams.audio_url.empty()) args.push_back("--audio-file=" + streams.audio_url);
+    args.push_back("--");
+    args.push_back(streams.video_url);
+    const char* backend = streams.backend == BackendKind::YtcuiDl ? "ytcui-dl"
+        : streams.backend == BackendKind::YtcuiWe ? "ytcui-we" : "yt-dlp";
+    Log::write("Playback resolved by %s", backend);
     std::string sock = ipc_.init_socket();
     if (spawn_mpv(args, mpv_pid_, Log::is_logdump(), sock)) {
-        playing_       = true;
+        playing_ = true;
         current_title_ = title;
         current_volume_ = opts_.volume;
         ipc_.try_connect();
-        Log::write("Direct play pid=%d ipc=%s", mpv_pid_, ipc_.connected() ? "ok" : "pending");
     }
 }
 
@@ -694,17 +331,7 @@ double Player::get_duration() const { return ipc_.duration(); }
 bool   Player::have_progress() const { return ipc_.have_progress(); }
 
 std::vector<std::pair<int, std::string>> Player::resolution_rungs() const {
-#ifdef USE_YTCUIDL
-    if (g_last_formats_.empty()) return {};
-    auto rungs = ytfast::Selector::ladder(g_last_formats_);
-    std::vector<std::pair<int, std::string>> out;
-    out.reserve(rungs.size());
-    for (const auto& r : rungs)
-        out.push_back({r.height, r.label()});
-    return out;
-#else
-    return {};
-#endif
+    return rungs_;
 }
 
 } // namespace ytui

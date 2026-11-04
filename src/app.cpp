@@ -1,4 +1,5 @@
 #include "app.h"
+#include "termination.h"
 #include "log.h"
 #include "thumbs.h"
 #include "termcaps.h"
@@ -76,9 +77,11 @@ static const char* greetings[] = {
 static const int NUM_GREETINGS = sizeof(greetings) / sizeof(greetings[0]);
 static const char* rgreet() { return greetings[rand() % NUM_GREETINGS]; }
 
-App::App(Theme theme) {
+App::App(Theme theme, SbFetch fetch) : sb_fetch_(std::move(fetch)) {
+    if (!sb_fetch_) sb_fetch_ = [](const auto& video, const auto& cats) { return ytcui::sb::fetch(video, cats); };
     srand(time(nullptr));
     config_.load();
+    if (!config_.cookies_file.empty()) YouTube::configure_cookies(config_.cookies_file);
 
     // Point the input handler at the live keybindings so configured / rebound
     // keys actually take effect. config_.keys stays valid for the App's life.
@@ -125,6 +128,7 @@ App::App(Theme theme) {
     apply_capability_overrides(/*authoritative=*/false);
     state_.logged_in = Auth::is_logged_in();
     state_.auth_browser = Auth::get_configured_browser();
+    state_.active_backend = config_.backend;
     Log::write("Thumbs: %s | Auth: %s | Theme: %s",
         state_.thumbs_available ? "yes (chafa)"
             : Thumbnails::renderer_available() ? "no (disabled)" : "no (chafa missing!)",
@@ -133,7 +137,10 @@ App::App(Theme theme) {
 }
 
 App::~App() { force_cleanup(); }
-void App::force_cleanup() { player_.stop(); tui_.shutdown(); }
+void App::force_cleanup() {
+    if (sb_worker_.joinable()) sb_worker_.join();
+    player_.stop(); tui_.shutdown();
+}
 void App::set_player_options(const PlayerOptions& opts) { player_.set_options(opts); }
 
 // Resolve config_.graphics -> state_.gfx_mode. "auto" probes $TERM/env; for an
@@ -359,7 +366,7 @@ void App::build_actions() {
     state_.actions.push_back({Action::LoopToggle,
         state_.loop_enabled ? "Loop: off" : "Loop: on"});
 
-    if (state_.logged_in)
+    if (!state_.auth_browser.empty())
         state_.actions.push_back({Action::Logout, "Logout (" + state_.auth_browser + ")"});
     else
         state_.actions.push_back({Action::LoginBrowser, "Login via browser cookies"});
@@ -432,7 +439,7 @@ int App::run() {
     std::string sb_loaded_for;  // video_id for which SB was last requested
     int prev_ui_mode = -1;
 
-    while (state_.running) {
+    while (state_.running && !termination_requested) {
         tui_.get_dimensions(state_.term_w, state_.term_h);
         state_.is_playing  = player_.is_playing();
         state_.is_paused   = player_.is_paused();
@@ -463,13 +470,15 @@ int App::run() {
             if (just_started || (state_.is_playing && !state_.now_playing_id.empty()
                                   && state_.now_playing_id != sb_loaded_for)) {
                 if (state_.now_playing_id != sb_loaded_for) {
-                    sb_loaded_for = state_.now_playing_id;
-                    start_sb_fetch(state_.now_playing_id);
+                    if (start_sb_fetch(state_.now_playing_id))
+                        sb_loaded_for = state_.now_playing_id;
                 }
             }
         }
         tick_timer();
         tick_sponsorblock();
+        auto save_error = library_.take_save_error();
+        if (!save_error.empty()) state_.status_message = "Save failed: " + save_error;
         state_.timer_status = timer_.active() ? timer_.describe() : "";
 
         // Poll background download (non-blocking): notify when it finishes.
@@ -832,9 +841,16 @@ int App::run() {
                 state_.browser_pick_idx < (int)state_.browser_choices.size()) {
                 std::string b = state_.browser_choices[state_.browser_pick_idx];
                 Auth::set_browser(b);
-                state_.logged_in = true;
+                state_.logged_in = false;
                 state_.auth_browser = b;
-                state_.status_message = "Logged in via " + b + " (^_^)b";
+                std::string error;
+                std::string path = Config::config_dir() + "/browser-cookies.txt";
+                if (Auth::export_session(b, path, error)) {
+                    config_.cookies_file = path;
+                    YouTube::configure_cookies(path);
+                    config_.save();
+                    state_.status_message = "Session imported from " + b + "; sign-in unverified";
+                } else state_.status_message = "Browser configured; " + error;
             } else {
                 state_.status_message = rgreet();
             }
@@ -1101,8 +1117,9 @@ void App::do_save(int choice) {
                 dup2(devnull, STDERR_FILENO);
                 close(devnull);
             }
-            std::string mc = "mkdir -p '" + dir + "'";
-            int r = system(mc.c_str()); (void)r;
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            if (ec) _exit(1);
             const char* self = !exe.empty() ? exe.c_str() : "ytcui";
             if (!exe.empty()) {
                 execl(self, self, "--internal-download", v.id.c_str(), dir.c_str(),
@@ -1198,6 +1215,12 @@ void App::execute_action(Action action) {
             return;
         case Action::Logout:
             Auth::clear_browser();
+            // Delete only the cookie file owned by this application's importer.
+            if (config_.cookies_file == Config::config_dir() + "/browser-cookies.txt")
+                ::unlink(config_.cookies_file.c_str());
+            config_.cookies_file.clear();
+            YouTube::configure_cookies("");
+            config_.save();
             state_.logged_in = false;
             state_.auth_browser.clear();
             state_.status_message = "Logged out (~_~)/";
@@ -1772,11 +1795,12 @@ void App::apply_resolution(int height) {
 }
 
 void App::start_play(const Video& v, PlayMode mode) {
+    const bool new_video = state_.now_playing_id != v.id;
     state_.now_playing_id = v.id;
     state_.stream_now     = v;
     state_.play_mode      = mode;
     user_stopped_         = false;
-    {
+    if (new_video) {
         std::lock_guard<std::mutex> lk(sb_mutex_);
         sb_segs_     = {};
         sb_video_id_.clear();
@@ -1787,6 +1811,10 @@ void App::start_play(const Video& v, PlayMode mode) {
     opts.preferred_height = config_.preferred_height;
     opts.backend          = config_.backend;
     opts.cookies_file     = config_.cookies_file;
+    opts.backend_auto_failover = config_.backend_auto_failover;
+    opts.ytdlp_path = config_.ytdlp_path;
+    opts.mpv_path = config_.mpv_path;
+    opts.browser = Auth::get_configured_browser();
     player_.set_options(opts);
     player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, mode);
 }
@@ -1805,32 +1833,35 @@ void App::sync_mode_transition(int from, int to) {
     // streamlined → normal: no-op; normal-mode state is fully preserved
 }
 
-void App::start_sb_fetch(const std::string& video_id) {
-    if (!config_.sponsorblock)  return;
-    if (video_id.empty())       return;
+bool App::start_sb_fetch(const std::string& video_id) {
+    if (!config_.sponsorblock)  return false;
+    if (video_id.empty())       return false;
     // Prevent overlapping fetches
     bool expected = false;
-    if (!sb_fetching_.compare_exchange_strong(expected, true)) return;
+    if (!sb_fetching_.compare_exchange_strong(expected, true)) return false;
+    if (sb_worker_.joinable()) sb_worker_.join();
 
     // Copy everything the thread needs — no shared pointers into App
     std::string vid  = video_id;
     std::string cats = config_.sponsorblock_categories;
-    std::thread([this, vid, cats]() {
-        auto segs = ytcui::sb::fetch(vid, cats);
+    sb_worker_ = std::thread([this, vid, cats]() {
+        ytcui::sb::Segments segs;
+        try { segs = sb_fetch_(vid, cats); } catch (...) {}
         {
             std::lock_guard<std::mutex> lk(sb_mutex_);
             sb_segs_      = std::move(segs);
             sb_video_id_  = vid;
         }
         sb_fetching_.store(false);
-    }).detach();
+    });
+    return true;
 }
 
 void App::tick_sponsorblock() {
     // Update the summary string (cheap even under lock)
     {
         std::lock_guard<std::mutex> lk(sb_mutex_);
-        if (sb_segs_.fetched)
+        if (sb_video_id_ == state_.now_playing_id && sb_segs_.fetched)
             state_.sponsorblock_summary = sb_segs_.summary();
         else
             state_.sponsorblock_summary.clear();
@@ -1844,7 +1875,7 @@ void App::tick_sponsorblock() {
     double target;
     {
         std::lock_guard<std::mutex> lk(sb_mutex_);
-        target = sb_segs_.skip_target(pos);
+        target = sb_video_id_ == state_.now_playing_id ? sb_segs_.skip_target(pos) : -1;
     }
     if (target >= 0) {
         auto now  = std::chrono::steady_clock::now();

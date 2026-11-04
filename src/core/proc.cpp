@@ -142,6 +142,7 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
         ::_exit(127);                       // execvp failed: not on PATH
     }
 
+    ::setpgid(pid, pid); // close the race before a very short timeout
     ::close(outp[1]);
     ::close(errp[1]);
     // Non-blocking, so one stream filling up cannot stall the read of the
@@ -150,15 +151,21 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
     ::fcntl(errp[0], F_SETFL, O_NONBLOCK);
 
     const int64_t deadline = timeout_ms > 0 ? now_ms() + timeout_ms : 0;
-    bool out_open = true, err_open = true;
+    bool out_open = true, err_open = true, reaped = false;
+    int st = 0;
 
-    while (out_open || err_open) {
+    while (out_open || err_open || !reaped) {
+        if (!reaped) {
+            pid_t result = ::waitpid(pid, &st, WNOHANG);
+            if (result == pid || (result < 0 && errno == ECHILD)) reaped = true;
+        }
+        if (!out_open && !err_open && reaped) break;
         pollfd fds[2];
         int n = 0;
         if (out_open) fds[n++] = pollfd{outp[0], POLLIN, 0};
         if (err_open) fds[n++] = pollfd{errp[0], POLLIN, 0};
 
-        int wait_ms = 200;
+        int wait_ms = 20;
         if (deadline) {
             const int64_t left = deadline - now_ms();
             if (left <= 0) { r.timed_out = true; break; }
@@ -184,6 +191,7 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
                     if (dst.size() < max_output)
                         dst.append(buf, (std::size_t)std::min<std::size_t>(
                                             (std::size_t)got, max_output - dst.size()));
+                    if (deadline && now_ms() >= deadline) break;
                     continue;
                 }
                 if (got == 0) {
@@ -203,21 +211,16 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
 
     if (r.timed_out) {
         // The whole group: yt-dlp's children would otherwise outlive it.
-        ::kill(-pid, SIGTERM);
-        for (int i = 0; i < 20; ++i) {
-            int st = 0;
-            if (::waitpid(pid, &st, WNOHANG) == pid) { r.ran = true; return r; }
-            ::usleep(25 * 1000);
-        }
         ::kill(-pid, SIGKILL);
-        int st = 0;
-        ::waitpid(pid, &st, 0);
+        if (!reaped) while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         r.ran = true;
         return r;
     }
 
-    int st = 0;
-    while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    if (!reaped) {
+        ::kill(-pid, SIGKILL);
+        while (::waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    }
     if (WIFEXITED(st)) {
         r.exit_code = WEXITSTATUS(st);
         // 127 is execvp's "not found", not something the program reported.

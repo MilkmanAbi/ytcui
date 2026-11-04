@@ -2,15 +2,16 @@
 //
 // ODR isolation: this file does NOT include any ytcui-we headers.
 // ytcui-we (with its own yj.h) is a separate executable; we communicate
-// with it via its --mpv-args interface. Only ytcui-dl's yj.h is used here
-// to parse the JSON array output.
+// with it via its --resolve-json interface. The bridge uses nlohmann/json
+// to parse a stream descriptor, without including either backend's yj.h.
 #include "player_we.h"
 #include "core/proc.h"
 #include "log.h"
 
-#include "ytcui-dl/yj.h"  // ytcui-dl's yj — NOT ytcui-we's
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -20,6 +21,8 @@ namespace ytui {
 // ── binary discovery ──────────────────────────────────────────────────────────
 
 std::string find_ytcuiwe_binary() {
+    if (const char* override_path = std::getenv("YTCUI_WE_BINARY"))
+        return ytcui::proc::which(override_path);
     // 1. Same directory as the running ytcui executable (portable via proc::self_exe).
     const std::string self = ytcui::proc::self_exe();
     if (!self.empty()) {
@@ -32,47 +35,19 @@ std::string find_ytcuiwe_binary() {
     return ytcui::proc::which("ytcui-we");
 }
 
-// ── JSON parser for mpv-json array ────────────────────────────────────────────
-// Output format: ["mpv","--ytdl=no","--force-media-title=...","--user-agent=UA",
-//                 "VIDEO_URL","--audio-file=AUDIO_URL"]
-static WeStreamInfo parse_mpv_json(const std::string& json) {
-    std::string j = json;
-    while (!j.empty() && (j.back() == '\n' || j.back() == '\r' || j.back() == ' '))
-        j.pop_back();
-
-    if (j.empty() || j.front() != '[')
-        throw std::runtime_error("ytcui-we --mpv-json: unexpected output: " + j.substr(0, 80));
-
-    auto root = yj::parse(j);
-    if (!root.is_arr())
-        throw std::runtime_error("ytcui-we --mpv-json: not a JSON array");
-
+// Stable bridge schema, isolated from both backends' yj implementations.
+static WeStreamInfo parse_resolve_json(const std::string& text) {
+    const auto root = nlohmann::json::parse(text);
     WeStreamInfo info;
-    yj::each_elem(root, [&](yj::Val v) {
-        std::string s = yj::unescape(v.raw());
-        if (s.rfind("--user-agent=", 0) == 0) {
-            info.user_agent = s.substr(13);
-        } else if (s.rfind("--audio-file=", 0) == 0) {
-            info.audio_url = s.substr(13);
-        } else if (s.rfind("--", 0) != 0 && s != "mpv") {
-            if (info.video_url.empty())
-                info.video_url = s;
-        }
-        return true;
-    });
-
-    // Detect live / HLS manifest (no audio track, URL contains m3u8 or is a local path)
-    if (info.audio_url.empty()) {
-        const auto& u = info.video_url;
-        if (u.find(".m3u8") != std::string::npos ||
-            u.find("manifest") != std::string::npos ||
-            (!u.empty() && u.front() == '/'))
-            info.is_live = true;
+    info.video_url = root.at("video_url").get<std::string>();
+    info.audio_url = root.value("audio_url", "");
+    info.user_agent = root.value("user_agent", "");
+    info.is_live = root.value("is_live", false);
+    for (const auto& height : root.at("heights")) {
+        int h = height.get<int>();
+        if (h > 0) info.rungs.emplace_back(h, std::to_string(h) + "p");
     }
-
-    if (info.video_url.empty())
-        throw std::runtime_error("ytcui-we --mpv-json: no URL in output");
-
+    if (info.video_url.empty()) throw std::runtime_error("ytcui-we: no URL in output");
     return info;
 }
 
@@ -80,27 +55,28 @@ static WeStreamInfo parse_mpv_json(const std::string& json) {
 
 WeStreamInfo we_resolve(const std::string& youtube_url,
                         int preferred_height,
-                        const std::string& cookies_file) {
+                        const std::string& cookies_file, bool audio_only) {
     auto binary = find_ytcuiwe_binary();
     if (binary.empty())
         throw std::runtime_error(
-            "ytcui-we executable not found — install ytcui-we or build with "
-            "CURL support (cmake -DCMAKE_BUILD_TYPE=Release .)");
+            "ytcui-we executable not found — install the ytcui-we companion beside ytcui "
+            "or set YTCUI_WE_BINARY");
 
     Log::write("[ytcui-we] resolver: %s", binary.c_str());
 
-    std::vector<std::string> args{binary, "--mpv-args"};
+    std::vector<std::string> args{binary, "--resolve-json"};
+    if (audio_only) args.push_back("--audio");
     if (preferred_height > 0)
         args.insert(args.end(), {"-q", std::to_string(preferred_height)});
     if (!cookies_file.empty())
         args.insert(args.end(), {"--cookies", cookies_file});
-    args.push_back(youtube_url);
+    args.insert(args.end(), {"--", youtube_url});
 
     std::string invocation;
     for (auto& a : args) { invocation += a; invocation += ' '; }
     Log::write("[ytcui-we] invoking: %s", invocation.c_str());
 
-    // 60-second timeout; output capped at 1 MiB (mpv-json is a single line).
+    // 60-second timeout; output capped at 1 MiB (resolve-json is a single line).
     // proc::run uses poll() to drain stdout and stderr concurrently, avoiding
     // the deadlock that sequential drain would cause if ytcui-we fills its
     // stderr pipe while the parent is still reading stdout.
@@ -122,8 +98,8 @@ WeStreamInfo we_resolve(const std::string& youtube_url,
             (result.err.empty() ? "" : ": " + result.err.substr(0, 200)));
     }
 
-    Log::write("[ytcui-we] mpv-json: %s", result.out.substr(0, 200).c_str());
-    auto info = parse_mpv_json(result.out);
+    Log::write("[ytcui-we] resolve-json: %s", result.out.substr(0, 200).c_str());
+    auto info = parse_resolve_json(result.out);
     Log::write("[ytcui-we] resolved video=%s audio=%s live=%s",
                info.video_url.substr(0, 60).c_str(),
                info.audio_url.empty() ? "(muxed)" : info.audio_url.substr(0, 60).c_str(),

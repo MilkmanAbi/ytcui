@@ -1,10 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-find_package(CURL)
-if(NOT CURL_FOUND)
-  message(STATUS "ytcui-we: libcurl not found — ytcui-we executable will not be built")
-  return()
-endif()
+find_package(CURL REQUIRED)
 
 find_package(Threads REQUIRED)
 
@@ -44,4 +40,4 @@ add_custom_command(TARGET ytcui-we POST_BUILD
 )
 
 install(TARGETS ytcui-we DESTINATION bin)
-install(DIRECTORY vendor/ejs DESTINATION share/ytcui/vendor)
+install(DIRECTORY vendor/ejs DESTINATION share/ytcui-we)

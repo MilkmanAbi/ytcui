@@ -1,5 +1,7 @@
 # ytcui-test-repo audit
 
+Historical baseline: see [implemented fixes and regression coverage](fixes.md) for the follow-up changes.
+
 Audited commit: [`63409a83575b0a55f66c8cece8fe2eb3f6b5851d`](https://github.com/MilkmanAbi/ytcui-test-repo/tree/63409a83575b0a55f66c8cece8fe2eb3f6b5851d), current default branch `main` (rechecked before publication), application version **5.0.4**. Published artifacts inspected: **v5.0.2**. Audit date: 4 November 2026, Singapore time.
 
 **16 findings: four P1 issues and twelve P2 issues.** Fix AUD-01 through AUD-04 before treating the three-backend integration and release bundles as complete. Green CI currently misses important runtime paths.
