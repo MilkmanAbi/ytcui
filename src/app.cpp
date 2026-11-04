@@ -497,6 +497,7 @@ int App::run() {
             const Playlist* pl = library_.get_playlist(state_.current_playlist_id);
             if (pl && !pl->videos.empty()) {
                 int n = (int)pl->videos.size();
+                state_.playlist_video_count = n;
                 state_.playlist_video_idx = std::clamp(state_.playlist_video_idx, 0, n - 1);
                 int max_vis = std::max(1, state_.term_h - 4 - 7 - 2);
                 if (state_.playlist_video_idx >= state_.playlist_video_scroll + max_vis)
@@ -1715,7 +1716,8 @@ void App::open_res_menu() {
         state_.res_labels.push_back(lab);
         state_.res_heights.push_back(h);
     }
-    // Set cursor to current preferred height
+    // Set cursor to current preferred height; remember it for the "active" marker
+    state_.res_active_height = config_.preferred_height;
     state_.res_sel = 0;
     for (int i = 0; i < (int)state_.res_heights.size(); i++) {
         if (state_.res_heights[i] == config_.preferred_height) {

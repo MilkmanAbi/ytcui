@@ -2215,12 +2215,16 @@ void TUI::draw_queue_view(const AppState& state) {
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
     } else {
         int max_rows = ph - 3;
-        for (int i = 0; i < n && i < max_rows; i++) {
+        int scroll = 0;
+        if (state.queue_sel >= scroll + max_rows) scroll = state.queue_sel - max_rows + 1;
+        scroll = std::max(0, std::min(scroll, n - max_rows));
+        for (int i = 0; i < max_rows && scroll + i < n; i++) {
+            int idx = scroll + i;
             int row = py + 1 + i;
             if (row >= state.term_h) break;
-            const auto& v = state.queue_items[i];
-            std::string line = std::to_string(i + 1) + ". " + v.title;
-            if (i == state.queue_sel) {
+            const auto& v = state.queue_items[idx];
+            std::string line = std::to_string(idx + 1) + ". " + v.title;
+            if (idx == state.queue_sel) {
                 attron(sel_attr());
                 mvprintw(row, px + 1, " %-*s", pw - 3, utf8_truncate(line, pw - 4).c_str());
                 attroff(sel_attr());
@@ -2245,9 +2249,18 @@ void TUI::draw_share_menu(const AppState& state) {
     int qr_h  = (int)rows.size();
     int qr_w  = rows.empty() ? 0 : (int)rows[0].size();
 
-    // Panel size: enough for QR + URL + hint
-    int ph = std::min(qr_h + 5, state.term_h - 2);
-    int pw = std::min(std::max(qr_w + 4, (int)state.share_url.size() + 6), state.term_w - 4);
+    // QR fits only when the panel is wide enough to hold all columns without clipping.
+    // A clipped QR code is unreadable; skip it entirely and show just the URL.
+    bool qr_fits = (state.term_w - 4 >= qr_w + 2);
+
+    int pw, ph;
+    if (qr_fits) {
+        ph = std::min(qr_h + 5, state.term_h - 2);
+        pw = std::min(std::max(qr_w + 4, (int)state.share_url.size() + 6), state.term_w - 4);
+    } else {
+        ph = std::min(6, state.term_h - 2);
+        pw = std::min(std::max(32, (int)state.share_url.size() + 6), state.term_w - 4);
+    }
     if (pw < 12 || ph < 4) return;
     int px = std::max(0, (state.term_w - pw) / 2);
     int py = std::max(0, (state.term_h - ph) / 2);
@@ -2259,25 +2272,32 @@ void TUI::draw_share_menu(const AppState& state) {
     mvprintw(py, px + std::max(0, (pw - 10) / 2), " Share ");
     attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
 
-    // QR code: dark module = █ (full block), light = space, dark-on-light
-    int qr_x = px + std::max(1, (pw - qr_w) / 2);
-    for (int r = 0; r < qr_h && py + 1 + r < state.term_h - 1; r++) {
-        attron(COLOR_PAIR(Color::BG));
-        for (int c = 0; c < (int)rows[r].size() && qr_x + c < state.term_w - 1; c++) {
-            bool dark = (rows[r][c] == 'X');
-            // dark-on-light: dark module → reverse (black on white), light → normal
-            if (dark) attron(A_REVERSE);
-            mvaddch(py + 1 + r, qr_x + c, ' ');
-            if (dark) attroff(A_REVERSE);
+    if (qr_fits) {
+        // QR code: dark module = █ (full block), light = space, dark-on-light
+        int qr_x = px + std::max(1, (pw - qr_w) / 2);
+        for (int r = 0; r < qr_h && py + 1 + r < state.term_h - 1; r++) {
+            attron(COLOR_PAIR(Color::BG));
+            for (int c = 0; c < (int)rows[r].size(); c++) {
+                bool dark = (rows[r][c] == 'X');
+                if (dark) attron(A_REVERSE);
+                mvaddch(py + 1 + r, qr_x + c, ' ');
+                if (dark) attroff(A_REVERSE);
+            }
+            attroff(COLOR_PAIR(Color::BG));
         }
-        attroff(COLOR_PAIR(Color::BG));
-    }
-
-    int url_row = py + 1 + qr_h;
-    if (url_row < state.term_h - 2 && url_row < py + ph - 2) {
+        int url_row = py + 1 + qr_h;
+        if (url_row < state.term_h - 2 && url_row < py + ph - 2) {
+            attron(COLOR_PAIR(Color::TITLE));
+            mvprintw(url_row, px + 2, "%s", utf8_truncate(state.share_url, pw - 4).c_str());
+            attroff(COLOR_PAIR(Color::TITLE));
+        }
+    } else {
         attron(COLOR_PAIR(Color::TITLE));
-        mvprintw(url_row, px + 2, "%s", utf8_truncate(state.share_url, pw - 4).c_str());
+        mvprintw(py + 2, px + 2, "%s", utf8_truncate(state.share_url, pw - 4).c_str());
         attroff(COLOR_PAIR(Color::TITLE));
+        attron(COLOR_PAIR(Color::BG) | A_DIM);
+        mvprintw(py + 3, px + 2, "Widen terminal for QR code");
+        attroff(COLOR_PAIR(Color::BG) | A_DIM);
     }
     attron(COLOR_PAIR(Color::BG) | A_DIM);
     mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Copied to clipboard  —  any key to close ", pw - 4).c_str());
@@ -2311,10 +2331,10 @@ void TUI::draw_res_menu(const AppState& state) {
         int idx = scroll + i;
         bool sel = (idx == state.res_sel);
         int ry = py + 1 + i;
-        bool is_current = (state.res_heights.size() > (size_t)idx &&
-                           state.res_heights[idx] == 0 ? false : false); // placeholder
-        (void)is_current;
-        std::string lab = state.res_labels[idx];
+        bool is_current = idx < (int)state.res_heights.size() &&
+                          state.res_heights[idx] == state.res_active_height;
+        // Prefix: "> " for the currently-active resolution, "  " otherwise.
+        std::string lab = (is_current ? "> " : "  ") + state.res_labels[idx];
         if (sel) {
             paint_sel_bar(ry, px + 1, pw - 2);
             attron(sel_attr() | A_BOLD);

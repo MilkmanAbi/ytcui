@@ -184,6 +184,7 @@ struct AppState {
     int playlist_scroll        = 0;  // scroll offset in playlists list
     int playlist_video_idx     = 0;  // selected video inside current playlist
     int playlist_video_scroll  = 0;  // scroll offset inside playlist view
+    int playlist_video_count   = 0;  // size of current playlist (set by app render loop)
     std::string current_playlist_id;  // id of playlist being viewed
 
     // Playlist picker popup
@@ -245,6 +246,7 @@ struct AppState {
     // Resolution selector popup ('r' key while playing video)
     bool show_res_menu = false;
     int  res_sel = 0;
+    int  res_active_height = 0; // config_.preferred_height when menu was opened
     std::vector<std::string> res_labels;   // "1080p60", "720p", etc.
     std::vector<int>         res_heights;  // corresponding height values (0 = best)
     // Set by input.cpp when user picks a resolution; app.cpp reads and clears it.

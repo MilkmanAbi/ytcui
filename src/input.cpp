@@ -201,8 +201,8 @@ bool InputHandler::handle(int ch, AppState& state) {
         if (ev.bstate & BUTTON5_PRESSED) {
             if      (state.focus == Panel::Actions)        { if (state.selected_action < (int)state.actions.size()-1) state.selected_action++; }
             else if (state.focus == Panel::BrowserPick)    { if (state.browser_pick_idx < (int)state.browser_choices.size()-1) state.browser_pick_idx++; }
-            else if (state.focus == Panel::PlaylistList)   { state.selected_playlist++; /* clamped in render */ }
-            else if (state.focus == Panel::PlaylistView)   { state.playlist_video_idx++; /* clamped in render */ }
+            else if (state.focus == Panel::PlaylistList)   { if (state.selected_playlist < (int)state.playlist_names.size() - 1) state.selected_playlist++; }
+            else if (state.focus == Panel::PlaylistView)   { if (state.playlist_video_count > 0 && state.playlist_video_idx < state.playlist_video_count - 1) state.playlist_video_idx++; }
             else if (state.focus == Panel::PlaylistActions){ if (state.selected_action < (int)state.actions.size()-1) state.selected_action++; }
             else scroll_results(+1);
             return false;
@@ -799,7 +799,8 @@ void InputHandler::handle_save_prompt(int ch, AppState& state) {
 void InputHandler::handle_playlist_list(int ch, AppState& state) {
     switch (ch) {
         case 'j': case KEY_DOWN:
-            state.selected_playlist++;  // clamped in app render loop
+            if (state.selected_playlist < (int)state.playlist_names.size() - 1)
+                state.selected_playlist++;
             break;
         case 'k': case KEY_UP:
             if (state.selected_playlist > 0) state.selected_playlist--;
@@ -827,7 +828,8 @@ void InputHandler::handle_playlist_list(int ch, AppState& state) {
 void InputHandler::handle_playlist_view(int ch, AppState& state) {
     switch (ch) {
         case 'j': case KEY_DOWN:
-            state.playlist_video_idx++;  // clamped in render
+            if (state.playlist_video_count > 0 && state.playlist_video_idx < state.playlist_video_count - 1)
+                state.playlist_video_idx++;
             break;
         case 'k': case KEY_UP:
             if (state.playlist_video_idx > 0) state.playlist_video_idx--;
