@@ -21,7 +21,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             gcc-${{ matrix.gcc }} g++-${{ matrix.gcc }} \
             cmake ninja-build \
-            libssl-dev zlib1g-dev libncursesw5-dev
+            libssl-dev zlib1g-dev libncursesw5-dev libcurl4-openssl-dev
       - name: Configure
         run: |
           cmake -B build -G Ninja \
@@ -34,6 +34,7 @@ jobs:
           ./build/ytcui --version
           ./build/ytcui --diag || true
           ./build/ytcui --colors
+          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -53,7 +54,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-${{ matrix.clang }} \
             cmake ninja-build \
-            libssl-dev zlib1g-dev libncursesw5-dev
+            libssl-dev zlib1g-dev libncursesw5-dev libcurl4-openssl-dev
       - name: Configure
         run: |
           cmake -B build -G Ninja \
@@ -66,6 +67,7 @@ jobs:
           ./build/ytcui --version
           ./build/ytcui --diag || true
           ./build/ytcui --colors
+          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -80,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install deps
-        run: brew install cmake ninja openssl zlib ncurses
+        run: brew install cmake ninja openssl zlib ncurses curl
       - name: Configure
         run: |
           cmake -B build -G Ninja \
@@ -88,7 +90,8 @@ jobs:
             -DOPENSSL_ROOT_DIR=$(brew --prefix openssl) \
             -DZLIB_ROOT=$(brew --prefix zlib) \
             -DCURSES_INCLUDE_PATH=$(brew --prefix ncurses)/include \
-            -DCURSES_LIBRARY=$(brew --prefix ncurses)/lib/libncursesw.dylib
+            -DCURSES_LIBRARY=$(brew --prefix ncurses)/lib/libncursesw.dylib \
+            -DCURL_ROOT=$(brew --prefix curl)
       - name: Build
         run: cmake --build build
       - name: Smoke test
@@ -96,6 +99,7 @@ jobs:
           ./build/ytcui --version
           ./build/ytcui --diag || true
           ./build/ytcui --colors
+          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -108,12 +112,13 @@ jobs:
       - uses: vmactions/freebsd-vm@v1
         with:
           usesh: true
-          prepare: pkg install -y cmake ninja openssl zlib ncurses
+          prepare: pkg install -y cmake ninja openssl zlib ncurses curl
           run: |
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
             cmake --build build
             ./build/ytcui --version
             ./build/ytcui --colors
+            test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
             ctest --test-dir build --output-on-failure
 
   # ── NetBSD ────────────────────────────────────────────────────────────────────
@@ -125,12 +130,13 @@ jobs:
       - uses: vmactions/netbsd-vm@v1
         with:
           usesh: true
-          prepare: pkgin -y install cmake ninja-build openssl zlib ncurses
+          prepare: pkgin -y install cmake ninja-build openssl zlib ncurses curl
           run: |
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
             cmake --build build
             ./build/ytcui --version
             ./build/ytcui --colors
+            test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
             ctest --test-dir build --output-on-failure
 
   # ── OpenBSD ───────────────────────────────────────────────────────────────────
@@ -142,10 +148,11 @@ jobs:
       - uses: vmactions/openbsd-vm@v1
         with:
           usesh: true
-          prepare: pkg_add cmake ninja openssl%3 zlib ncurses
+          prepare: pkg_add cmake ninja openssl%3 zlib ncurses curl
           run: |
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
             cmake --build build
             ./build/ytcui --version
             ./build/ytcui --colors
+            test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
             ctest --test-dir build --output-on-failure

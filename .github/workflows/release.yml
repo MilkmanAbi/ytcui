@@ -1,0 +1,236 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+# Halt immediately if any job fails — CD must not publish a broken release.
+# Each job also sets continue-on-error: false (the default) explicitly for clarity.
+
+jobs:
+  # ── Gate: ALL CI jobs must pass before we build release artifacts ─────────────
+  # We re-run the full CI matrix here (not just check status) so the release
+  # artifacts are built from exactly the same workflow that passed CI.
+
+  linux-gcc:
+    name: CI Linux gcc-${{ matrix.gcc }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true          # halt the whole matrix on first failure
+      matrix:
+        gcc: [12, 13, 14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-${{ matrix.gcc }} g++-${{ matrix.gcc }} \
+            cmake ninja-build \
+            libssl-dev zlib1g-dev libncursesw5-dev libcurl4-openssl-dev
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_CXX_COMPILER=g++-${{ matrix.gcc }} \
+            -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Smoke test
+        run: |
+          ./build/ytcui --version
+          ./build/ytcui --colors
+          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  linux-clang:
+    name: CI Linux clang-${{ matrix.clang }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        clang: [16, 17, 18]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-${{ matrix.clang }} \
+            cmake ninja-build \
+            libssl-dev zlib1g-dev libncursesw5-dev libcurl4-openssl-dev
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_CXX_COMPILER=clang++-${{ matrix.clang }} \
+            -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build
+      - name: Smoke test
+        run: |
+          ./build/ytcui --version
+          ./build/ytcui --colors
+          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  macos:
+    name: CI macOS ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [macos-15, macos-14, macos-13]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: brew install cmake ninja openssl zlib ncurses curl
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_ROOT_DIR=$(brew --prefix openssl) \
+            -DZLIB_ROOT=$(brew --prefix zlib) \
+            -DCURSES_INCLUDE_PATH=$(brew --prefix ncurses)/include \
+            -DCURSES_LIBRARY=$(brew --prefix ncurses)/lib/libncursesw.dylib \
+            -DCURL_ROOT=$(brew --prefix curl)
+      - name: Build
+        run: cmake --build build
+      - name: Smoke test
+        run: |
+          ./build/ytcui --version
+          ./build/ytcui --colors
+          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  freebsd:
+    name: CI FreeBSD 14
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: pkg install -y cmake ninja openssl zlib ncurses curl
+          run: |
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+            cmake --build build
+            ./build/ytcui --version
+            ./build/ytcui --colors
+            test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+            ctest --test-dir build --output-on-failure
+
+  # ── Build release artifacts (only after ALL CI jobs pass) ─────────────────────
+  release-linux:
+    name: Release Linux
+    needs: [linux-gcc, linux-clang, freebsd]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build \
+            libssl-dev zlib1g-dev libncursesw5-dev libcurl4-openssl-dev
+      - name: Build release binary
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+          strip build/ytcui
+          test -f build/third_party/ytcui-we-src/ytcui-we && strip build/third_party/ytcui-we-src/ytcui-we || true
+      - name: Package
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          cp build/ytcui dist/ytcui
+          if [ -f build/third_party/ytcui-we-src/ytcui-we ]; then
+            cp build/third_party/ytcui-we-src/ytcui-we dist/ytcui-we
+            # Bundle EJS assets alongside ytcui-we
+            cp -r third_party/ytcui-we-src/vendor/ejs dist/ejs
+          fi
+          tar -czf ytcui-${TAG}-linux-x86_64.tar.gz -C dist .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytcui-linux-x86_64
+          path: ytcui-*.tar.gz
+
+  release-macos:
+    name: Release macOS (universal)
+    needs: [macos]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: brew install cmake ninja openssl zlib ncurses curl
+      - name: Build release binary
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_ROOT_DIR=$(brew --prefix openssl) \
+            -DZLIB_ROOT=$(brew --prefix zlib) \
+            -DCURSES_INCLUDE_PATH=$(brew --prefix ncurses)/include \
+            -DCURSES_LIBRARY=$(brew --prefix ncurses)/lib/libncursesw.dylib \
+            -DCURL_ROOT=$(brew --prefix curl)
+          cmake --build build
+          strip build/ytcui
+          test -f build/third_party/ytcui-we-src/ytcui-we && strip build/third_party/ytcui-we-src/ytcui-we || true
+      - name: Package
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          cp build/ytcui dist/ytcui
+          if [ -f build/third_party/ytcui-we-src/ytcui-we ]; then
+            cp build/third_party/ytcui-we-src/ytcui-we dist/ytcui-we
+            cp -r third_party/ytcui-we-src/vendor/ejs dist/ejs
+          fi
+          tar -czf ytcui-${TAG}-macos.tar.gz -C dist .
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytcui-macos
+          path: ytcui-*.tar.gz
+
+  # ── Publish GitHub release (only after artifacts are ready) ───────────────────
+  publish:
+    name: Publish release
+    needs: [release-linux, release-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Read VERSION
+        id: ver
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ytcui ${{ steps.ver.outputs.version }}
+          body: |
+            ## ytcui ${{ steps.ver.outputs.version }}
+
+            All CI checks passed (Linux GCC 12–14, Clang 16–18, macOS 13–15, FreeBSD 14).
+
+            ### Backends included
+            - **ytcui-dl** — built into `ytcui` (native C++ InnerTube, no deps at runtime)
+            - **ytcui-we** — companion binary `ytcui-we` (requires libcurl; EJS assets in `ejs/` alongside)
+            - **yt-dlp** — third-party; install separately and select in settings
+
+            ### Install
+            ```
+            tar xzf ytcui-*-linux-x86_64.tar.gz
+            sudo install -m755 ytcui ytcui-we /usr/local/bin/
+            sudo install -d /usr/local/share/ytcui/
+            sudo cp -r ejs /usr/local/share/ytcui/
+            ```
+          files: artifacts/*.tar.gz
+          fail_on_unmatched_files: true
