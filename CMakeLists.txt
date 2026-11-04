@@ -43,6 +43,7 @@ set(CORE_SRCS
     src/core/layout.cpp
     src/core/log.cpp
     src/core/paths.cpp
+    src/core/proc.cpp
     src/core/queue.cpp
     src/core/share.cpp
     src/core/sponsorblock.cpp

@@ -40,7 +40,7 @@ jobs:
         run: |
           ./build/ytcui --version
           ./build/ytcui --colors
-          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+          ./build/third_party/ytcui-we-src/ytcui-we --version
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -71,7 +71,7 @@ jobs:
         run: |
           ./build/ytcui --version
           ./build/ytcui --colors
-          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+          ./build/third_party/ytcui-we-src/ytcui-we --version
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -101,7 +101,7 @@ jobs:
         run: |
           ./build/ytcui --version
           ./build/ytcui --colors
-          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+          ./build/third_party/ytcui-we-src/ytcui-we --version
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -220,7 +220,7 @@ jobs:
           body: |
             ## ytcui ${{ steps.ver.outputs.version }}
 
-            All CI checks passed (Linux GCC 12–14, Clang 16–18, macOS 13–15, FreeBSD 14).
+            All CI checks passed (Linux GCC 12–14, Clang 16–18, macOS 14–15, FreeBSD 14).
 
             ### Backends included
             - **ytcui-dl** — built into `ytcui` (native C++ InnerTube, no deps at runtime)

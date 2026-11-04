@@ -12,6 +12,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#  include <mach-o/dyld.h>   // _NSGetExecutablePath
+#elif defined(__FreeBSD__)
+#  include <sys/sysctl.h>    // KERN_PROC_PATHNAME
+#  include <sys/types.h>
+#endif
+
 namespace ytcui::proc {
 namespace {
 
@@ -220,6 +227,28 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
         r.ran = true;
     }
     return r;
+}
+
+std::string self_exe() {
+    char buf[4096] = {};
+#if defined(__linux__)
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) return std::string(buf, static_cast<std::size_t>(n));
+#elif defined(__APPLE__)
+    uint32_t size = static_cast<uint32_t>(sizeof(buf));
+    if (_NSGetExecutablePath(buf, &size) == 0) return std::string(buf);
+#elif defined(__FreeBSD__)
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    std::size_t size = sizeof(buf);
+    if (::sysctl(mib, 4, buf, &size, nullptr, 0) == 0 && size > 1)
+        return std::string(buf);
+#elif defined(__NetBSD__)
+    const ssize_t n = ::readlink("/proc/curproc/exe", buf, sizeof(buf) - 1);
+    if (n > 0) return std::string(buf, static_cast<std::size_t>(n));
+#endif
+    // OpenBSD has no /proc by default; unknown platforms fall through to "".
+    (void)buf;
+    return {};
 }
 
 }  // namespace ytcui::proc

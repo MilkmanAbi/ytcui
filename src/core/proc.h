@@ -51,4 +51,12 @@ std::string which(const std::string& program);
 // silently fails for a reason that has nothing to do with ytcui.
 std::vector<std::string> which_all(const std::string& program);
 
+// Absolute path of the running executable itself, or empty on failure.
+// Used to find companion binaries (e.g. ytcui-we) installed alongside ytcui.
+// Portable: Linux uses /proc/self/exe, macOS uses _NSGetExecutablePath,
+// FreeBSD uses sysctl KERN_PROC_PATHNAME, NetBSD uses /proc/curproc/exe,
+// OpenBSD returns "" (no /proc by default; PATH-based discovery is the
+// fallback on that platform).
+std::string self_exe();
+
 }  // namespace ytcui::proc

@@ -34,7 +34,7 @@ jobs:
           ./build/ytcui --version
           ./build/ytcui --diag || true
           ./build/ytcui --colors
-          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+          ./build/third_party/ytcui-we-src/ytcui-we --version
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -67,7 +67,7 @@ jobs:
           ./build/ytcui --version
           ./build/ytcui --diag || true
           ./build/ytcui --colors
-          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+          ./build/third_party/ytcui-we-src/ytcui-we --version
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -99,7 +99,7 @@ jobs:
           ./build/ytcui --version
           ./build/ytcui --diag || true
           ./build/ytcui --colors
-          test -f ./build/third_party/ytcui-we-src/ytcui-we && ./build/third_party/ytcui-we-src/ytcui-we --version || true
+          ./build/third_party/ytcui-we-src/ytcui-we --version
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 

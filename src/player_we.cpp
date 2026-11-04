@@ -5,110 +5,37 @@
 // with it via its --mpv-args interface. Only ytcui-dl's yj.h is used here
 // to parse the JSON array output.
 #include "player_we.h"
+#include "core/proc.h"
 #include "log.h"
 
 #include "ytcui-dl/yj.h"  // ytcui-dl's yj — NOT ytcui-we's
 
-#include <cerrno>
-#include <cstring>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 namespace ytui {
-
-// ── subprocess capture ────────────────────────────────────────────────────────
-
-struct ProcOut { int code; std::string out; std::string err; };
-
-static ProcOut run_capture(const std::vector<std::string>& args) {
-    if (args.empty()) throw std::runtime_error("empty command");
-
-    int out_pipe[2], err_pipe[2];
-    if (::pipe(out_pipe) != 0 || ::pipe(err_pipe) != 0)
-        throw std::runtime_error("pipe: " + std::string(strerror(errno)));
-
-    std::vector<char*> argv;
-    for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
-
-    pid_t pid = ::fork();
-    if (pid < 0) {
-        ::close(out_pipe[0]); ::close(out_pipe[1]);
-        ::close(err_pipe[0]); ::close(err_pipe[1]);
-        throw std::runtime_error("fork: " + std::string(strerror(errno)));
-    }
-    if (pid == 0) {
-        ::dup2(out_pipe[1], STDOUT_FILENO);
-        ::dup2(err_pipe[1], STDERR_FILENO);
-        ::close(out_pipe[0]); ::close(out_pipe[1]);
-        ::close(err_pipe[0]); ::close(err_pipe[1]);
-        ::execvp(argv[0], argv.data());
-        ::_exit(127);
-    }
-
-    ::close(out_pipe[1]);
-    ::close(err_pipe[1]);
-
-    auto drain = [](int fd) {
-        std::string buf;
-        char tmp[4096];
-        ssize_t n;
-        while ((n = ::read(fd, tmp, sizeof tmp)) > 0)
-            buf.append(tmp, n);
-        ::close(fd);
-        return buf;
-    };
-
-    // Simple sequential drain (stdout then stderr); works for short outputs.
-    // For long stderr interleaved with stdout a select() loop would be needed,
-    // but --mpv-json emits a single compact JSON line + newline on stdout.
-    ProcOut result;
-    result.out = drain(out_pipe[0]);
-    result.err = drain(err_pipe[0]);
-
-    int status = 0;
-    while (::waitpid(pid, &status, 0) < 0)
-        if (errno != EINTR) break;
-    result.code = WIFEXITED(status) ? WEXITSTATUS(status) : 128;
-    return result;
-}
 
 // ── binary discovery ──────────────────────────────────────────────────────────
 
 std::string find_ytcuiwe_binary() {
-    // 1. Same directory as the running ytcui executable (/proc/self/exe).
-    char self_buf[4096] = {};
-    ssize_t n = ::readlink("/proc/self/exe", self_buf, sizeof(self_buf) - 1);
-    if (n > 0) {
-        auto sibling = std::filesystem::path(self_buf).parent_path() / "ytcui-we";
+    // 1. Same directory as the running ytcui executable (portable via proc::self_exe).
+    const std::string self = ytcui::proc::self_exe();
+    if (!self.empty()) {
+        auto sibling = std::filesystem::path(self).parent_path() / "ytcui-we";
         if (std::filesystem::exists(sibling))
             return sibling.string();
     }
 
-    // 2. $PATH — let execvp locate it.
-    // Quick existence check using PATH search.
-    auto check = run_capture({"which", "ytcui-we"});
-    if (check.code == 0 && !check.out.empty()) {
-        auto path = check.out;
-        while (!path.empty() && (path.back() == '\n' || path.back() == '\r'))
-            path.pop_back();
-        if (!path.empty()) return path;
-    }
-
-    return {};
+    // 2. PATH search — no shell invocation needed.
+    return ytcui::proc::which("ytcui-we");
 }
 
 // ── JSON parser for mpv-json array ────────────────────────────────────────────
 // Output format: ["mpv","--ytdl=no","--force-media-title=...","--user-agent=UA",
 //                 "VIDEO_URL","--audio-file=AUDIO_URL"]
 static WeStreamInfo parse_mpv_json(const std::string& json) {
-    // Strip trailing whitespace/newline
     std::string j = json;
     while (!j.empty() && (j.back() == '\n' || j.back() == '\r' || j.back() == ' '))
         j.pop_back();
@@ -128,7 +55,6 @@ static WeStreamInfo parse_mpv_json(const std::string& json) {
         } else if (s.rfind("--audio-file=", 0) == 0) {
             info.audio_url = s.substr(13);
         } else if (s.rfind("--", 0) != 0 && s != "mpv") {
-            // Bare argument (not a flag) = URL or file path
             if (info.video_url.empty())
                 info.video_url = s;
         }
@@ -174,14 +100,25 @@ WeStreamInfo we_resolve(const std::string& youtube_url,
     for (auto& a : args) { invocation += a; invocation += ' '; }
     Log::write("[ytcui-we] invoking: %s", invocation.c_str());
 
-    auto result = run_capture(args);
+    // 60-second timeout; output capped at 1 MiB (mpv-json is a single line).
+    // proc::run uses poll() to drain stdout and stderr concurrently, avoiding
+    // the deadlock that sequential drain would cause if ytcui-we fills its
+    // stderr pipe while the parent is still reading stdout.
+    auto result = ytcui::proc::run(args, 60000, 1u * 1024 * 1024);
 
-    if (result.code != 0) {
-        // Log stderr for diagnosis
+    if (!result.ran) {
+        throw std::runtime_error("ytcui-we: failed to execute '" + binary + "'");
+    }
+
+    if (result.timed_out) {
+        throw std::runtime_error("ytcui-we: timed out after 60s");
+    }
+
+    if (result.exit_code != 0) {
         if (!result.err.empty())
             Log::write("[ytcui-we] stderr: %s", result.err.substr(0, 400).c_str());
         throw std::runtime_error(
-            "ytcui-we exited " + std::to_string(result.code) +
+            "ytcui-we exited " + std::to_string(result.exit_code) +
             (result.err.empty() ? "" : ": " + result.err.substr(0, 200)));
     }
 
