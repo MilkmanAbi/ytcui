@@ -18,6 +18,7 @@
 // ── helper: run ytcui-we with args, capture exit code and first output line ──
 #include <array>
 #include <cstdio>
+#include <sys/wait.h>
 
 static std::pair<int,std::string> shell_first_line(const std::string& cmd) {
     std::array<char,512> buf{};
