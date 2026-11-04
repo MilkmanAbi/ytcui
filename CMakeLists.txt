@@ -9,6 +9,12 @@ project(ytcui VERSION ${YTCUI_VERSION_STR} LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Reject accidental C++20 syntax while retaining supported C++17 toolchains.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-Werror=c++20-extensions" YTCUI_HAS_CXX20_EXTENSION_WARNING)
+if(YTCUI_HAS_CXX20_EXTENSION_WARNING)
+    add_compile_options(-Werror=c++20-extensions)
+endif()
 # Preserve pkgsrc/Homebrew/ports dependency directories after installation.
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 option(YTCUI_SANITIZE "Enable AddressSanitizer for runtime regression tests" OFF)
