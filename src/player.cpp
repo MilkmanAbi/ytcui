@@ -32,7 +32,17 @@ static std::string extract_video_id(const std::string& url) {
     if (bp != std::string::npos) return url.substr(bp + 9, 11);
     return url;
 }
+
+// Cache of formats from the most recent resolve — used by resolution_rungs().
+static std::vector<ytfast::StreamFormat> g_last_formats_;
 #endif  // USE_YTCUIDL
+
+// ─── ytcui-we backend ──────────────────────────────────────────────────────────
+// ytcui-we (we_formats.h, yt_youtube.h) shares yj.h/yjw.h names with ytcui-dl
+// but implements them differently — both cannot be included in one TU.
+// The ytcui-we resolve path lives in a separate TU (player_we.cpp, future work).
+// Runtime dispatch: BackendKind::YtcuiWe currently falls through to ytcui-dl
+// and logs the stub so the UI + config plumbing is verifiable now.
 
 namespace ytui {
 
@@ -300,10 +310,10 @@ struct StreamURLs {
 
 #ifdef USE_YTCUIDL
 
-static StreamURLs resolve_stream_urls(const std::string& youtube_url) {
+static StreamURLs resolve_stream_urls(const std::string& youtube_url, int preferred_height = 0) {
     StreamURLs result;
     std::string video_id = extract_video_id(youtube_url);
-    Log::write("[ytcui-dl] resolve id=%s", video_id.c_str());
+    Log::write("[ytcui-dl] resolve id=%s h=%d", video_id.c_str(), preferred_height);
 
     try {
         // get_stream_formats() uses the URL cache — if search already prefetched
@@ -315,11 +325,12 @@ static StreamURLs resolve_stream_urls(const std::string& youtube_url) {
             return result;
         }
 
-        // Prefer muxed stream (video+audio in one progressive download).
-        // select_best_video_stream() returns muxed first, adaptive video-only
-        // only as a last resort.
+        // Cache formats for the resolution ladder (resolution_rungs()).
+        g_last_formats_ = info.formats;
+
+        // preferred_height == 0 → best available; >0 → cap at that height.
         std::string video_url = ytfast::InnertubeClient::select_best_video_stream(
-            info.formats, 1080);
+            info.formats, preferred_height);
 
         if (video_url.empty()) {
             Log::write("[ytcui-dl] resolve: no usable video stream");
@@ -437,6 +448,7 @@ void Player::play_piped(const std::string& url, const std::string& title, PlayMo
         // adaptive audio being blocked. It still falls back to muxed
         // automatically if no adaptive audio track exists for this video.
         auto info = ytfast::InnertubeClient::get_instance().get_stream_formats(video_id);
+        g_last_formats_ = info.formats;
         stream_url = ytfast::InnertubeClient::select_best_audio_stream(info.formats);
         user_agent = info.client_ua ? info.client_ua : "";
         Log::write("[ytcui-dl] play_piped: resolved audio stream (len=%zu)", stream_url.size());
@@ -545,7 +557,18 @@ void Player::play_piped(const std::string& url, const std::string& title, PlayMo
 
 void Player::play_direct(const std::string& url, const std::string& title) {
     std::string vol = vol_flag(opts_.volume);
-    StreamURLs streams = resolve_stream_urls(url);
+    StreamURLs streams;
+#if defined(USE_YTCUIWE) && defined(USE_YTCUIDL)
+    if (opts_.backend == BackendKind::YtcuiWe) {
+        // ytcui-we resolver lives in a separate TU (player_we.cpp, future work)
+        // to avoid yj.h/yjw.h ODR collisions with ytcui-dl.
+        // Fall through to ytcui-dl for now.
+        Log::write("[ytcui-we] stub — falling back to ytcui-dl");
+    }
+    streams = resolve_stream_urls(url, opts_.preferred_height);
+#else
+    streams = resolve_stream_urls(url, opts_.preferred_height);
+#endif
 
     std::vector<std::string> args = {
         "mpv",
@@ -665,5 +688,19 @@ void Player::kill_mpv() {
 double Player::get_position() const { return ipc_.position(); }
 double Player::get_duration() const { return ipc_.duration(); }
 bool   Player::have_progress() const { return ipc_.have_progress(); }
+
+std::vector<std::pair<int, std::string>> Player::resolution_rungs() const {
+#ifdef USE_YTCUIDL
+    if (g_last_formats_.empty()) return {};
+    auto rungs = ytfast::Selector::ladder(g_last_formats_);
+    std::vector<std::pair<int, std::string>> out;
+    out.reserve(rungs.size());
+    for (const auto& r : rungs)
+        out.push_back({r.height, r.label()});
+    return out;
+#else
+    return {};
+#endif
+}
 
 } // namespace ytui

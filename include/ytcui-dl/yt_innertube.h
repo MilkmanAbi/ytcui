@@ -1,4 +1,5 @@
 #pragma once
+#include "yt_cookie_policy.h"
 /*
  * ytcui-dl — yt_innertube.h
  *
@@ -121,8 +122,17 @@ static constexpr ClientDef WEB_CLIENT = {
 // client fetch_player() actually used is tracked on VideoInfo::client and its
 // matching UA travels with every subsequent request for that video -- so the
 // fix, next time, is again just reordering this list.
+// ANDROID_VR is last, not second. Upstream's own extractor dates its break to
+// 2026-08-17 -- "ALL formats ... are 403'd with version 1.65.10" -- and a tail
+// probe against a fresh ANDROID_VR URL on an ordinary video confirms it: the
+// player response looks perfect, 26 adaptive formats all carrying URLs, and
+// the CDN refuses the end of every one of them. Sitting second, it was the
+// client that answered for every video VISIONOS declined ("made for kids"
+// uploads, mainly), so it turned a video ANDROID could at least serve the
+// first minute of into one that served nothing. It stays in the chain only as
+// a last resort for a response the three above it don't produce at all.
 static constexpr const ClientDef* PLAYER_CHAIN[] = {
-    &VISIONOS_CLIENT, &ANDROID_VR_CLIENT, &ANDROID_CLIENT, &IOS_CLIENT
+    &VISIONOS_CLIENT, &ANDROID_CLIENT, &IOS_CLIENT, &ANDROID_VR_CLIENT
 };
 static constexpr size_t PLAYER_CHAIN_N =
     sizeof(PLAYER_CHAIN) / sizeof(PLAYER_CHAIN[0]);
@@ -218,7 +228,7 @@ inline std::string text_of(yj::Val node) {
 inline std::string gen_cpn() {
     static const char* alpha =
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
-    static std::mt19937 rng(std::random_device{}());
+    static thread_local std::mt19937 rng(std::random_device{}());
     std::uniform_int_distribution<int> d(0, 63);
     std::string r(16, ' ');
     for (auto& c : r) c = alpha[d(rng)];
@@ -376,8 +386,10 @@ public:
             }
             if (field.size() < 7) continue;
             std::string_view domain = field[0], name = field[5], value = field[6];
-            if (domain.find("youtube.com") == std::string_view::npos &&
-                domain.find("google.com") == std::string_view::npos) continue;
+            if (!youtube_cookie_domain(domain) || name.empty() ||
+                !cookie_field_safe(name) || !cookie_field_safe(value) ||
+                name.find_first_of(";=") != std::string_view::npos ||
+                value.find(';') != std::string_view::npos) continue;
             if (!cookies.empty()) cookies += "; ";
             cookies.append(name); cookies += '='; cookies.append(value);
             if (name == "SAPISID" || name == "__Secure-3PAPISID")
@@ -509,7 +521,10 @@ public:
         VideoInfo cached;
         if (cache_.get(video_id, cached)) return cached;
         VideoInfo info = fetch_player(video_id);
-        if (!info.formats.empty()) cache_.put(video_id, info);
+        // Live is never cached: a manifest for a stream that is still running
+        // goes stale in minutes, where this cache holds entries for hours.
+        if (!info.is_live_now && (!info.formats.empty() || !info.hls_url.empty()))
+            cache_.put(video_id, info);
         return info;
     }
 
@@ -990,13 +1005,29 @@ private:
         for (size_t i = 0; i < PLAYER_CHAIN_N; ++i) {
             try {
                 VideoInfo v = player_request(video_id, *PLAYER_CHAIN[i]);
+                // Live is a different question entirely. A live response does
+                // carry adaptive formats with URLs, so the loop below would
+                // happily declare victory -- but those formats have no
+                // contentLength, and a ranged GET against one returns a single
+                // byte rather than a stream. HLS is the only transport that
+                // plays, so for a live stream the first client offering a
+                // manifest is the one that wins.
+                if (v.is_live_now) {
+                    if (!v.hls_url.empty()) return v;
+                    if (fallback.hls_url.empty() && fallback.formats.empty())
+                        fallback = v;
+                    continue;
+                }
                 // A client that returns adaptive formats we can actually fetch
                 // wins outright.
                 for (auto& f : v.formats)
                     if (f.is_video_only() || f.is_audio_only()) return v;
-                // Muxed-only or SABR-gated: keep it as a last resort but keep
-                // looking for a client that gives us the real format list.
-                if (!v.formats.empty() && fallback.formats.empty())
+                // Muxed-only, SABR-gated, or nothing but a manifest: keep it as
+                // a last resort and carry on looking for a client that gives us
+                // the real format list. An HLS-only response counts as a last
+                // resort -- it still plays, where an empty one does not.
+                if ((!v.formats.empty() || !v.hls_url.empty())
+                    && fallback.formats.empty() && fallback.hls_url.empty())
                     fallback = std::move(v);
             } catch (...) {}
         }
@@ -1071,6 +1102,7 @@ public:
                 else if (yj::keyis(k, "shortDescription")) info.description = yj::unescape(v.raw());
                 else if (yj::keyis(k, "viewCount"))    info.view_count  = v.i64();
                 else if (yj::keyis(k, "isLiveContent"))info.is_live     = v.boolean();
+                else if (yj::keyis(k, "isLive"))       info.is_live_now = v.boolean();
                 else if (yj::keyis(k, "lengthSeconds"))info.duration_secs = (int)v.i64();
                 return true;
             });
@@ -1082,6 +1114,14 @@ public:
 
         yj::Val sd = yj::get(root, "streamingData");
         if (!sd.is_obj()) return;
+
+        // Read before the SABR gate below, deliberately. A client can hand
+        // back a URL-less format list and still carry a perfectly good HLS
+        // manifest -- current IOS versions do exactly that -- and the gate's
+        // early return would throw away the only playable thing in the
+        // response on its way out.
+        if (yj::Val h = yj::get(sd, "hlsManifestUrl"); h.is_str())
+            info.hls_url = yj::unescape(h.raw());
 
         // SABR gate. A response can be perfectly OK and still be useless to a
         // plain HTTP downloader: adaptiveFormats is fully populated but every

@@ -432,6 +432,7 @@ void TUI::render(const AppState& state, const Library* lib) {
         if (state.show_timer_prompt || state.focus == Panel::TimerPrompt) draw_timer_prompt(state);
         if (state.show_queue || state.focus == Panel::QueueView)          draw_queue_view(state);
         if (state.show_share  || state.focus == Panel::ShareMenu)         draw_share_menu(state);
+        if (state.show_res_menu   || state.focus == Panel::ResMenu)       draw_res_menu(state);
         refresh();
         flush_graphics();
         return;
@@ -473,6 +474,7 @@ void TUI::render(const AppState& state, const Library* lib) {
     if (state.show_timer_prompt || state.focus == Panel::TimerPrompt) draw_timer_prompt(state);
     if (state.show_queue || state.focus == Panel::QueueView)          draw_queue_view(state);
     if (state.show_share  || state.focus == Panel::ShareMenu)         draw_share_menu(state);
+    if (state.show_res_menu   || state.focus == Panel::ResMenu)       draw_res_menu(state);
     refresh();
     flush_graphics();   // emit raster thumbnails (Sixel/Kitty/iTerm) post-refresh
 }
@@ -1760,8 +1762,9 @@ void TUI::draw_settings(const AppState& state) {
         // ── General tab: backend, UI mode, SponsorBlock, resume, playlist, loop ─
         struct Row { std::string label; std::string value; };
         Row rows[] = {
-            { "Backend",           state.active_backend == BackendKind::YtcuiDl
-                                   ? "ytcui-dl  (native)" : "yt-dlp" },
+            { "Backend",           state.active_backend == BackendKind::YtcuiDl ? "ytcui-dl  (native)"
+                                 : state.active_backend == BackendKind::YtcuiWe  ? "ytcui-we (session)"
+                                 :                                                  "yt-dlp" },
             { "UI mode",           state.config_mode },
             { "SponsorBlock",      state.sponsorblock_enabled ? "on" : "off" },
             { "Resume playback",   state.resume_playback ? "on" : "off" },
@@ -1869,9 +1872,10 @@ void TUI::draw_shortcuts(const AppState& state) {
         {"Ctrl-T",    "sleep timer (set / cancel)"},
         {"Ctrl-R",    "toggle loop on end"},
         {"Ctrl-Q",    "queue view"},
-        {"Ctrl-B",    "switch backend (ytcui-dl / yt-dlp)"},
+        {"Ctrl-B",    "cycle backend (ytcui-dl → yt-dlp → ytcui-we)"},
         {"Ctrl-S",    "settings panel"},
         // actions
+        {"r",         "resolution selector"},
         {"s",         "sort menu"},
         {"n",         "new playlist (in playlist view)"},
         {"c",         "cycle playlist color tag (in playlists)"},
@@ -2278,6 +2282,57 @@ void TUI::draw_share_menu(const AppState& state) {
     attron(COLOR_PAIR(Color::BG) | A_DIM);
     mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Copied to clipboard  —  any key to close ", pw - 4).c_str());
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
+}
+
+void TUI::draw_res_menu(const AppState& state) {
+    if (state.res_labels.empty()) return;
+
+    int n   = (int)state.res_labels.size();
+    int pw  = 24;
+    int ph  = std::min(n + 4, state.term_h - 4);
+    if (ph < 4) return;
+    int px  = std::max(0, (state.term_w - pw) / 2);
+    int py  = std::max(0, (state.term_h - ph) / 2);
+
+    for (int i = 0; i < ph && py + i < state.term_h; i++) mvhline(py + i, px, ' ', pw);
+    draw_box(py, px, ph, pw, Color::HEADER);
+
+    attron(COLOR_PAIR(Color::HEADER) | A_BOLD);
+    std::string title = " Quality ";
+    mvprintw(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
+    attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
+
+    int vis   = ph - 3;
+    int scroll = 0;
+    if (state.res_sel >= scroll + vis) scroll = state.res_sel - vis + 1;
+    if (state.res_sel < scroll)        scroll = state.res_sel;
+
+    for (int i = 0; i < vis && scroll + i < n; i++) {
+        int idx = scroll + i;
+        bool sel = (idx == state.res_sel);
+        int ry = py + 1 + i;
+        bool is_current = (state.res_heights.size() > (size_t)idx &&
+                           state.res_heights[idx] == 0 ? false : false); // placeholder
+        (void)is_current;
+        std::string lab = state.res_labels[idx];
+        if (sel) {
+            paint_sel_bar(ry, px + 1, pw - 2);
+            attron(sel_attr() | A_BOLD);
+            mvprintw(ry, px + 2, "%s", utf8_truncate(lab, pw - 4).c_str());
+            attroff(sel_attr() | A_BOLD);
+        } else {
+            attron(COLOR_PAIR(Color::TITLE));
+            mvprintw(ry, px + 2, "%s", utf8_truncate(lab, pw - 4).c_str());
+            attroff(COLOR_PAIR(Color::TITLE));
+        }
+    }
+
+    if (state.show_hints) {
+        attron(COLOR_PAIR(Color::BG) | A_DIM);
+        mvprintw(py + ph - 1, px + 2, "%s",
+                 utf8_truncate("⏎ apply  esc cancel", pw - 4).c_str());
+        attroff(COLOR_PAIR(Color::BG) | A_DIM);
+    }
 }
 
 void TUI::stream_more_actions(const AppState& state) {

@@ -59,6 +59,7 @@ set(YTCUI_INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src          # so "core/timer.h" resolves to src/core/timer.h
     ${CMAKE_SOURCE_DIR}/third_party/ytcui-dl/include
+    ${CMAKE_SOURCE_DIR}/third_party/ytcui-we/include
     ${CMAKE_SOURCE_DIR}/third_party/qrcodegen
     ${CURSES_INCLUDE_DIRS}
 )
@@ -76,6 +77,7 @@ target_compile_definitions(ytcui PRIVATE
     YTUI_VERSION="${YTCUI_VERSION_STR}"
     YTCUI_VERSION="${YTCUI_VERSION_STR}"
     USE_YTCUIDL          # default backend: ytcui-dl (native InnerTube, no yt-dlp dep)
+    USE_YTCUIWE          # ytcui-we cookie-session backend
 )
 
 target_link_libraries(ytcui PRIVATE

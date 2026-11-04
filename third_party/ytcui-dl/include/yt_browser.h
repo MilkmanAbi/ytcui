@@ -1,4 +1,6 @@
 #pragma once
+#include "yt_cookie_policy.h"
+#include <openssl/sha.h>
 /*
  * ytcui-dl — yt_browser.h
  *
@@ -312,7 +314,7 @@ inline std::string chromium_secret(const Profile& p, bool v11) {
             "secret-tool lookup application " + p.keyring_app + " 2>/dev/null");
         if (!s.empty()) return s;
     }
-    return "peanuts";
+    return "";
 #endif
 }
 
@@ -325,7 +327,8 @@ inline bool mostly_printable(const std::string& s) {
 // Returns false when the value cannot be recovered (wrong key, unknown
 // scheme), which the caller reports rather than silently dropping.
 inline bool decrypt_chromium(const std::string& blob, const std::string& secret,
-                             std::string& out) {
+                             std::string& out, const std::string& domain = "",
+                             bool domain_bound = false) {
     if (blob.size() < 3 + 16) return false;
     const bool v10 = blob.compare(0, 3, "v10") == 0;
     const bool v11 = blob.compare(0, 3, "v11") == 0;
@@ -369,18 +372,23 @@ inline bool decrypt_chromium(const std::string& blob, const std::string& secret,
     // PKCS#7 by hand, because a wrong key usually yields a bogus pad byte and
     // OpenSSL's own unpadding would just fail the whole decrypt with no way to
     // tell that case apart from a malformed record.
-    if (!plain.empty()) {
-        const unsigned char pad = (unsigned char)plain.back();
-        if (pad >= 1 && pad <= 16 && pad <= plain.size())
-            plain.resize(plain.size() - pad);
-    }
+    if (plain.empty()) return false;
+    const unsigned char pad = (unsigned char)plain.back();
+    if (pad < 1 || pad > 16 || pad > plain.size()) return false;
+    for (size_t i = plain.size() - pad; i < plain.size(); ++i)
+        if ((unsigned char)plain[i] != pad) return false;
+    plain.resize(plain.size() - pad);
 
     // Chrome 130-ish began prefixing the plaintext with a 32-byte SHA-256 of
     // the cookie's domain. There is no version bump to key off, so detect it:
     // a cookie value is printable, a hash prefix is not.
-    if (!mostly_printable(plain) && plain.size() > 32 &&
-        mostly_printable(plain.substr(32)))
+    if (domain_bound || (!mostly_printable(plain) && plain.size() >= 32)) {
+        if (domain.empty() || plain.size() < SHA256_DIGEST_LENGTH) return false;
+        unsigned char expected[SHA256_DIGEST_LENGTH];
+        SHA256(reinterpret_cast<const unsigned char*>(domain.data()), domain.size(), expected);
+        if (CRYPTO_memcmp(plain.data(), expected, sizeof expected) != 0) return false;
         plain.erase(0, 32);
+    }
     if (!mostly_printable(plain)) return false;
 
     out = std::move(plain);
@@ -405,8 +413,7 @@ struct ExtractResult {
 };
 
 inline bool interesting_domain(const std::string& d) {
-    return d.find("youtube.com") != std::string::npos ||
-           d.find("google.com")  != std::string::npos;
+    return youtube_cookie_domain(d);
 }
 
 inline ExtractResult read_cookies(const Profile& p, std::vector<Cookie>& out) {
@@ -432,6 +439,14 @@ inline ExtractResult read_cookies(const Profile& p, std::vector<Cookie>& out) {
 
     std::string secret;
     bool secret_ready = false;
+    bool domain_bound = false;
+    if (p.engine == Engine::Chromium) {
+        db.scan("meta", [&](const std::vector<sqlite::Value>& row) {
+            if (row.size() >= 2 && row[0].as_str() == "version")
+                domain_bound = row[1].as_int() >= 24;
+            return true;
+        });
+    }
 
     int i_host, i_name, i_value, i_path, i_exp, i_sec, i_http, i_enc = -1;
     if (p.engine == Engine::Firefox) {
@@ -478,7 +493,8 @@ inline ExtractResult read_cookies(const Profile& p, std::vector<Cookie>& out) {
                     secret = chromium_secret(p, v11);
                     secret_ready = true;
                 }
-                if (!decrypt_chromium(enc->as_str(), secret, c.value)) {
+                if (secret.empty()) { ++r.undecryptable; return true; }
+                if (!decrypt_chromium(enc->as_str(), secret, c.value, c.domain, domain_bound)) {
                     ++r.undecryptable;
                     return true;
                 }
@@ -506,13 +522,28 @@ inline bool write_netscape(const std::string& path, const std::vector<Cookie>& v
                            std::string* err = nullptr) {
     // 0600 from the start, not chmod'd after: this file is a live credential,
     // and a window where it is world-readable is a window too many.
-    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    for (const Cookie& c : v) {
+        if (!interesting_domain(c.domain) || !cookie_field_safe(c.domain) ||
+            !cookie_field_safe(c.path) || !cookie_field_safe(c.name) || !cookie_field_safe(c.value)) {
+            if (err) *err = "invalid cookie domain or field";
+            return false;
+        }
+    }
+    std::string temporary = path + ".tmp.XXXXXX";
+    const int fd = ::mkstemp(temporary.data());
     if (fd < 0) { if (err) *err = "cannot create " + path; return false; }
+    struct stat permissions{};
+    if (::fchmod(fd, 0600) != 0 || ::fstat(fd, &permissions) != 0 ||
+        (permissions.st_mode & 0777) != 0600) {
+        ::close(fd); ::unlink(temporary.c_str());
+        if (err) *err = "filesystem cannot enforce private cookie permissions";
+        return false;
+    }
     FILE* f = ::fdopen(fd, "w");
-    if (!f) { ::close(fd); if (err) *err = "cannot write " + path; return false; }
+    if (!f) { ::close(fd); ::unlink(temporary.c_str()); if (err) *err = "cannot write " + path; return false; }
 
     std::fprintf(f, "# Netscape HTTP Cookie File\n");
-    std::fprintf(f, "# Written by ytcui-we. Treat this as a password.\n");
+    std::fprintf(f, "# Written by ytcui-dl session. Treat this as a password.\n");
     const int64_t fallback = (int64_t)::time(nullptr) + 180 * 24 * 3600;
     for (const Cookie& c : v) {
         // The #HttpOnly_ prefix is the curl/yt-dlp convention and ytcui-dl's
@@ -526,7 +557,14 @@ inline bool write_netscape(const std::string& path, const std::vector<Cookie>& v
                      (long long)(c.expiry > 0 ? c.expiry : fallback),
                      c.name.c_str(), c.value.c_str());
     }
-    std::fclose(f);
+    bool ok = std::fflush(f) == 0;
+    if (::fsync(fd) != 0) ok = false;
+    if (std::fclose(f) != 0) ok = false;
+    if (!ok || ::rename(temporary.c_str(), path.c_str()) != 0) {
+        ::unlink(temporary.c_str());
+        if (err) *err = "cannot finalize cookie jar " + path;
+        return false;
+    }
     return true;
 }
 

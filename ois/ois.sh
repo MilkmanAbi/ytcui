@@ -1,9 +1,9 @@
 #!/bin/sh
-# OIS v2 -- OneInstallSystem
+# OIS v4 -- OneInstallSystem
 # Pure POSIX sh. Hard dependency: sh + POSIX utilities.
 # ---------------------------------------------------------------------
 
-OIS_VERSION="4.0.0"
+OIS_VERSION="4.1.0"
 OIS_SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || exit 1
 
 # shellcheck source=core/utils.sh
@@ -225,8 +225,13 @@ _ois_shim_gc() {
 # True when this ois.sh is the store's installed runtime rather than a
 # copy sitting inside somebody's project.
 _ois_self_is_runtime() {
-    case "$OIS_SELF_DIR" in
-        "$(ois_runtime_dir)"/*) return 0 ;;
+    # Compare physical paths: TMPDIR may have a trailing slash or refer
+    # through /var -> /private/var on macOS. Textual prefixes can differ
+    # even when they name the same installed runtime.
+    _sir_root="$(cd "$(ois_runtime_dir)" 2>/dev/null && pwd -P)" || return 1
+    _sir_self="$(cd "$OIS_SELF_DIR" 2>/dev/null && pwd -P)" || return 1
+    case "$_sir_self" in
+        "$_sir_root"/*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -302,6 +307,7 @@ _install_from_tree() {
     # state=ok rather than leaving a healthy install marked partial
     # (which doctor would then offer to delete).
     _it_had_ok=0
+    _it_old_runtime="$(ois_meta_get "$OIS_APP_NAME" runtime 2>/dev/null)" || _it_old_runtime=""
     [ "$(ois_state_get "$OIS_APP_NAME" 2>/dev/null)" = "ok" ] && _it_had_ok=1
     ois_app_create "$OIS_APP_NAME" || return 1
     ois_state_begin "$OIS_APP_NAME" installing
@@ -384,7 +390,7 @@ _install_from_tree() {
         case "$_it_ver" in v*|V*) _it_ver="${_it_ver#?}" ;; esac
     }
 
-    ois_meta_setmany "$OIS_APP_NAME" <<META
+    ois_meta_setmany "$OIS_APP_NAME" <<META || { _it_undo; return 1; }
 version=$_it_ver
 binary=$_it_dest
 hook=$_it_hook
@@ -402,6 +408,15 @@ state_dir=$OIS_OWNS_STATE
 installed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null)
 source_root=$_it_root
 META
+
+    # The app's hook and metadata now point at this runtime. Release the
+    # previous reference only after that switch, preserving every other app.
+    if [ -n "$_it_old_runtime" ] && [ "$_it_old_runtime" != "$OIS_VERSION" ]; then
+        case "$_it_old_runtime" in .|..) _it_old_runtime="" ;; esac
+        if ois_is_fname "$_it_old_runtime"; then
+            ois_runtime_ref_del "$_it_old_runtime" "$OIS_APP_NAME" || { _it_undo; return 1; }
+        fi
+    fi
 
     ois_manifest_add "$OIS_APP_NAME" file "$_it_dest" purge
     ois_manifest_add "$OIS_APP_NAME" file "$_it_hook" purge

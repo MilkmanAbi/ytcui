@@ -30,7 +30,7 @@ struct Video {
 };
 
 // Which extraction backend to use. Switchable at runtime (no restart).
-enum class BackendKind { YtcuiDl, YtDlp };
+enum class BackendKind { YtcuiDl, YtDlp, YtcuiWe };
 
 // Stream URLs returned by a backend — either direct URLs or the yt-dlp pass-through mode.
 struct Streams {
@@ -72,6 +72,7 @@ enum class Panel {
     ShareMenu,        // Share overlay: QR code + clipboard copy
     TimerPrompt,      // Sleep timer text input
     QueueView,        // Play queue panel
+    ResMenu,          // Resolution selector popup ('r' key)
 };
 
 enum class Tab { Library, Playlists, Feed, History, Results };
@@ -240,6 +241,16 @@ struct AppState {
 
     // Watch progress (0..1) for the selected result, for a pip in the row
     double selected_progress = 0.0;
+
+    // Resolution selector popup ('r' key while playing video)
+    bool show_res_menu = false;
+    int  res_sel = 0;
+    std::vector<std::string> res_labels;   // "1080p60", "720p", etc.
+    std::vector<int>         res_heights;  // corresponding height values (0 = best)
+    // Set by input.cpp when user picks a resolution; app.cpp reads and clears it.
+    int pending_res_height = -1;
+    // Set by input.cpp when 'r' is pressed; app.cpp opens the popup and clears it.
+    bool res_menu_requested = false;
 };
 
 // The streamlined section menu, shared by the renderer and input handler so the

@@ -65,6 +65,7 @@ public:
         dopt.connections = 3;
         dopt.on_progress = nullptr;
 
+        OutputStage stage(out_path, audio_only ? ".mp3" : ".mp4");
         std::string tmp_video, tmp_audio;
         auto cleanup_temps = [&] {
             if (!tmp_video.empty()) ::remove(tmp_video.c_str());
@@ -72,7 +73,7 @@ public:
         };
 
         if (!audio_only && !video_url.empty()) {
-            tmp_video = out_path + ".src-video.tmp";
+            tmp_video = stage.directory + "/video.src";
             auto r = Downloader::fetch(video_url, tmp_video, dopt);
             if (!r.ok) {
                 res.error = "video fetch: " + (r.error.empty() ? "failed" : r.error);
@@ -81,7 +82,7 @@ public:
             }
         }
         if (!audio_url.empty()) {
-            tmp_audio = out_path + ".src-audio.tmp";
+            tmp_audio = stage.directory + "/audio.src";
             auto r = Downloader::fetch(audio_url, tmp_audio, dopt);
             if (!r.ok) {
                 res.error = "audio fetch: " + (r.error.empty() ? "failed" : r.error);
@@ -91,64 +92,49 @@ public:
         }
 
         if (audio_only) {
-            int rc = run(build_cmd(tmp_video, tmp_audio, out_path, true, quiet, false));
+            int rc = run(build_cmd(tmp_video, tmp_audio, stage.output, true, quiet, false));
             cleanup_temps();
             if (rc != 0) { res.error = "ffmpeg exited " + std::to_string(rc); return res; }
-            res.ok = true;
+            res.ok = stage.finalize();
+            if (!res.ok) res.error = "cannot finalize output without overwriting an existing file";
             res.transcoded = true;
             return res;
         }
 
-        int rc = run(build_cmd(tmp_video, tmp_audio, out_path, false, quiet, true));
+        int rc = run(build_cmd(tmp_video, tmp_audio, stage.output, false, quiet, true));
         if (rc != 0) {
             // A stream copy fails outright when the source codec isn't
             // legal in MP4 (vp9 video, opus audio) rather than silently
             // transcoding -- ffmpeg errors and writes nothing usable. Retry
             // once with a real transcode instead of copy.
-            ::remove(out_path.c_str());
-            rc = run(build_cmd(tmp_video, tmp_audio, out_path, false, quiet, false));
+            ::remove(stage.output.c_str());
+            rc = run(build_cmd(tmp_video, tmp_audio, stage.output, false, quiet, false));
             res.transcoded = rc == 0;
         }
         cleanup_temps();
         if (rc != 0) { res.error = "ffmpeg exited " + std::to_string(rc); return res; }
-        res.ok = true;
+        res.ok = stage.finalize();
+        if (!res.ok) res.error = "cannot finalize output without overwriting an existing file";
         return res;
     }
 
 private:
-    static int run(const std::string& cmd) { return std::system(cmd.c_str()); }
-
-    static std::string q(const std::string& s) {
-        std::string o = "'";
-        for (char c : s) { if (c == '\'') o += "'\\''"; else o += c; }
-        return o + "'";
-    }
-
-    // video_path/audio_path are local temp files (or empty); no network
-    // options needed here at all.
-    static std::string build_cmd(const std::string& video_path, const std::string& audio_path,
-                                 const std::string& out_path,
-                                 bool audio_only, bool quiet, bool copy) {
-        std::string cmd = "ffmpeg -y -loglevel " + std::string(quiet ? "error" : "warning");
-
+    static int run(const std::vector<std::string>& args) { return run_process(args); }
+    static std::vector<std::string> build_cmd(const std::string& video_path, const std::string& audio_path,
+                                             const std::string& output, bool audio_only, bool quiet, bool copy) {
+        std::vector<std::string> args{"ffmpeg", "-n", "-loglevel", quiet ? "error" : "warning"};
         if (audio_only) {
-            cmd += " -i " + q(audio_path);
-            cmd += " -vn -map 0:a:0 -c:a libmp3lame -q:a 2";
+            args.insert(args.end(), {"-i", audio_path, "-vn", "-map", "0:a:0", "-c:a", "libmp3lame", "-q:a", "2"});
         } else {
-            cmd += " -i " + q(video_path);
-            if (!audio_path.empty()) cmd += " -i " + q(audio_path);
-            cmd += " -map 0:v:0";
-            // "?" makes the map optional: a muxed or video-only fetch (no
-            // separate audio track) still has its audio on input 0, and this
-            // must not error if that track turns out to be silent/absent.
-            cmd += std::string(" -map ") + (audio_path.empty() ? "0" : "1") + ":a:0?";
-            cmd += copy ? " -c copy" : " -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k";
-            cmd += " -movflags +faststart";
+            args.insert(args.end(), {"-i", video_path});
+            if (!audio_path.empty()) args.insert(args.end(), {"-i", audio_path});
+            args.insert(args.end(), {"-map", "0:v:0", "-map", audio_path.empty() ? "0:a:0?" : "1:a:0?"});
+            if (copy) args.insert(args.end(), {"-c", "copy"});
+            else args.insert(args.end(), {"-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k"});
+            args.insert(args.end(), {"-movflags", "+faststart"});
         }
-        cmd += " " + q(out_path);
-        if (quiet) cmd += " >/dev/null 2>&1";
-        return cmd;
+        args.push_back(output);
+        return args;
     }
 };
-
 } // namespace ytfast

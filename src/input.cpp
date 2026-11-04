@@ -152,6 +152,25 @@ bool InputHandler::handle(int ch, AppState& state) {
     if (state.focus == Panel::TimerPrompt) { handle_timer_prompt(ch, state); return false; }
     if (state.focus == Panel::QueueView)   { handle_queue_view(ch, state);   return false; }
     if (state.focus == Panel::ShareMenu)   { state.show_share = false; state.focus = Panel::Results; return false; }
+    if (state.focus == Panel::ResMenu) {
+        if (ch == 27) {  // Esc — close
+            state.show_res_menu = false;
+            state.focus = Panel::Results;
+        } else if (ch == kb().scroll_down || ch == KEY_DOWN) {
+            if (state.res_sel + 1 < (int)state.res_labels.size())
+                state.res_sel++;
+        } else if (ch == kb().scroll_up || ch == KEY_UP) {
+            if (state.res_sel > 0)
+                state.res_sel--;
+        } else if (ch == '\n' || ch == '\r' || ch == kb().select) {
+            int height = state.res_sel < (int)state.res_heights.size()
+                         ? state.res_heights[state.res_sel] : 0;
+            state.pending_res_height = height;
+            state.show_res_menu = false;
+            state.focus = Panel::Results;
+        }
+        return false;
+    }
 
     // Narrow-terminal streamlined UI has its own, simpler navigation.
     if (state.ui_mode == 1) return stream_handle(ch, state);
@@ -366,6 +385,25 @@ bool InputHandler::handle(int ch, AppState& state) {
     if (state.focus == Panel::PlaylistList)   { handle_playlist_list(ch, state);   return false; }
     if (state.focus == Panel::TimerPrompt)    { handle_timer_prompt(ch, state);    return false; }
     if (state.focus == Panel::QueueView)      { handle_queue_view(ch, state);      return false; }
+    if (state.focus == Panel::ResMenu) {
+        if (ch == 27) {
+            state.show_res_menu = false;
+            state.focus = Panel::Results;
+        } else if (ch == kb().scroll_down || ch == KEY_DOWN) {
+            if (state.res_sel + 1 < (int)state.res_labels.size())
+                state.res_sel++;
+        } else if (ch == kb().scroll_up || ch == KEY_UP) {
+            if (state.res_sel > 0)
+                state.res_sel--;
+        } else if (ch == '\n' || ch == '\r' || ch == kb().select) {
+            int height = state.res_sel < (int)state.res_heights.size()
+                         ? state.res_heights[state.res_sel] : 0;
+            state.pending_res_height = height;
+            state.show_res_menu = false;
+            state.focus = Panel::Results;
+        }
+        return false;
+    }
     if (state.focus == Panel::ShareMenu) {
         // any key dismisses the share menu
         state.show_share = false;
@@ -404,6 +442,11 @@ bool InputHandler::handle(int ch, AppState& state) {
         state.show_shortcuts = !state.show_shortcuts;
         if (state.show_shortcuts)
             state.focus = Panel::Shortcuts;
+        return false;
+    }
+    // 'r': open resolution selector (only when ytcui-dl backend has resolved a video)
+    if (!in_search && ch == 'r') {
+        state.res_menu_requested = true;
         return false;
     }
     // Ctrl-Q: toggle queue view

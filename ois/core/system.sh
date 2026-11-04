@@ -15,6 +15,15 @@ case "$(uname -s 2>/dev/null)" in
 esac
 [ -r /proc/version ] && grep -qi microsoft /proc/version 2>/dev/null && OIS_OS="wsl"
 
+# Termux reports uname -s == Linux (it's a real Linux kernel underneath, just
+# with no root and a private $PREFIX instead of /). $TERMUX_VERSION is
+# exported into every Termux session by the base system, so it's the
+# reliable hook -- same one the Makefiles use. Termux still falls into the
+# generic Linux package-manager branch below (it genuinely runs apt/dpkg),
+# so this only needs to flip OIS_OS for diagnostics and the privilege model.
+OIS_IS_TERMUX="no"
+[ -n "${TERMUX_VERSION:-}" ] && { OIS_OS="termux"; OIS_IS_TERMUX="yes"; }
+
 OIS_DISTRO="" OIS_DISTRO_VER=""
 case "$OIS_OS" in linux|wsl)
     if [ -r /etc/os-release ]; then
@@ -157,6 +166,7 @@ OIS_XDG_CACHE="${XDG_CACHE_HOME:-$OIS_HOME/.cache}"
 OIS_XDG_STATE="${XDG_STATE_HOME:-$OIS_HOME/.local/state}"
 
 export OIS_OS OIS_DISTRO OIS_DISTRO_VER OIS_ARCH
+export OIS_IS_TERMUX
 export OIS_MACOS_VER OIS_MACOS_MAJOR OIS_MACOS_NAME
 export OIS_BREW_PREFIX OIS_PORT_PREFIX
 export OIS_PM OIS_IS_ROOT OIS_SUDO OIS_MAKE OIS_IS_CI

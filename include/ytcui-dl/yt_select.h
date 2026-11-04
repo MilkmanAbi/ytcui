@@ -532,11 +532,16 @@ private:
     static const StreamFormat* best_muxed(const std::vector<StreamFormat>& fmts,
                                           const Quality& q) {
         const StreamFormat* best = nullptr;
-        for (const auto& f : fmts) {
-            if (!f.is_muxed()) continue;
-            if (q.max_height > 0 && f.height > q.max_height) continue;
-            if (q.height > 0 && f.height > q.height && best) continue;
-            if (!best || better_video(f, *best, q)) best = &f;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (const auto& f : fmts) {
+                if (!f.is_muxed()) continue;
+                if (q.max_height > 0 && f.height > q.max_height) continue;
+                if (q.max_bitrate > 0 && f.effective_bitrate() > q.max_bitrate) continue;
+                if (q.for_playback && playback_rank(f.video_codec, f.height, caps()) < 0) continue;
+                if (q.height > 0 && ((pass == 0 && f.height > q.height) || (pass == 1 && f.height <= q.height))) continue;
+                if (!best || (pass == 1 && f.height != best->height ? f.height < best->height : better_video(f, *best, q))) best = &f;
+            }
+            if (best || q.height == 0) break;
         }
         return best;
     }

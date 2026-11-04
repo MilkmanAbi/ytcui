@@ -2,7 +2,7 @@
 # Commit this. It detects drift; it does not pin versions
 # (system package managers cannot install arbitrary old ones).
 # Regenerate: ois lock    Compare: ois lock --check
-ois_version	3.0.0
+ois_version	4.1.0
 platform	linux/x86_64	apt
 dep	ncurses	libncurses-dev	6.4.20240113
 dep	curl	libcurl4-openssl-dev	8.5.0

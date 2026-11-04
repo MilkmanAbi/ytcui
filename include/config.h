@@ -142,6 +142,10 @@ struct Config {
     // Path to the ytcui-we session file (cookie path, not a credential).
     std::string cookies_file;
 
+    // Preferred resolution height for video playback (0 = best available).
+    // Set via the resolution selector popup ('r' key). Persisted across sessions.
+    int preferred_height = 0;
+
     void load();
     void save();
     static std::string config_dir();

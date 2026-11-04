@@ -325,23 +325,28 @@ ois_runtime_install() {
             ois_install_file "$_ri_f" "$_ri_dst/core/${_ri_f##*/}" 644 || return 1
         done
     fi
-    # Publish `current` by renaming a symlink: rename(2) over an existing
-    # link is atomic, so no reader ever observes a missing runtime.
-    # Record the active version in a plain file too: readlink(1) is not
-    # POSIX and parsing `ls -l` output is fragile.
-    printf '%s\n' "$_ri_ver" | ois_write_atomic "$(ois_runtime_dir)/.active" 644
-    _ri_cur="$(ois_runtime_dir)/current"
-    _ri_tmp="$(ois_runtime_dir)/.current.$$"
+    # Use the SAME basename in a staging directory and name the destination
+    # PARENT to mv. `mv tmp current` follows current when it links to a dir;
+    # `mv staging/current runtime/` renames over that link atomically with
+    # POSIX mv, without GNU -T/BSD -h flags or an unlink/create gap.
+    _ri_parent="$(ois_runtime_dir)"
+    _ri_stage="$_ri_parent/.publish.$$"
+    _ri_tmp="$_ri_stage/current"
+    ois_mkdir "$_ri_stage" || return 1
     _ri_done=0
     if ln -s "$_ri_ver" "$_ri_tmp" 2>/dev/null; then
-        if mv -f "$_ri_tmp" "$_ri_cur" 2>/dev/null; then _ri_done=1; fi
+        if mv -f "$_ri_tmp" "$_ri_parent/" 2>/dev/null; then _ri_done=1; fi
     fi
     if [ "$_ri_done" = 0 ]; then
         rm -f "$_ri_tmp" 2>/dev/null || :
         if ois_priv ln -s "$_ri_ver" "$_ri_tmp" 2>/dev/null; then
-            ois_priv mv -f "$_ri_tmp" "$_ri_cur" 2>/dev/null || :
+            if ois_priv mv -f "$_ri_tmp" "$_ri_parent/" 2>/dev/null; then _ri_done=1; fi
         fi
     fi
+    rmdir "$_ri_stage" 2>/dev/null || ois_priv rmdir "$_ri_stage" 2>/dev/null || :
+    [ "$_ri_done" = 1 ] || { ois_err "cannot publish runtime $_ri_ver"; return 1; }
+    # The plain marker remains readable without readlink(1).
+    printf '%s\n' "$_ri_ver" | ois_write_atomic "$_ri_parent/.active" 644 || return 1
     return 0
 }
 
@@ -389,6 +394,17 @@ ois_runtime_gc() {
     [ -d "$_rg_d" ] || return 0
     _rg_cur=""
     if [ -r "$_rg_d/.active" ]; then read -r _rg_cur < "$_rg_d/.active" || _rg_cur=""; fi
+    # Older installers can update .active while accidentally leaving the
+    # current symlink on another version. Protect what the global shim
+    # actually executes, and repair the marker for older GC implementations.
+    _rg_actual="$(cd "$_rg_d/current" 2>/dev/null && pwd -P)" || _rg_actual=""
+    if [ -n "$_rg_actual" ]; then
+        _rg_actual="${_rg_actual##*/}"
+        if [ "$_rg_cur" != "$_rg_actual" ]; then
+            printf '%s\n' "$_rg_actual" | ois_write_atomic "$_rg_d/.active" 644 || return 1
+        fi
+        _rg_cur="$_rg_actual"
+    fi
     _rg_n=0
     for _rg_v in "$_rg_d"/*; do
         [ -d "$_rg_v" ] || continue

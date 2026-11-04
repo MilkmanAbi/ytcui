@@ -107,6 +107,8 @@ void Config::load() {
             show_status_bar = j["show_status_bar"].get<bool>();
         if (j.contains("show_hints") && j["show_hints"].is_boolean())
             show_hints = j["show_hints"].get<bool>();
+        if (j.contains("preferred_height") && j["preferred_height"].is_number_integer())
+            preferred_height = j["preferred_height"].get<int>();
 
         // Per-element color overrides: "colors": { "accent": 198, "title": 213 }
         if (j.contains("colors") && j["colors"].is_object()) {
@@ -167,7 +169,8 @@ void Config::save() {
         {"mode",            mode},
         {"force_features",  force_features},
         {"show_status_bar", show_status_bar},
-        {"show_hints",      show_hints}
+        {"show_hints",      show_hints},
+        {"preferred_height", preferred_height}
     };
 
     // Only write colors section if there are custom overrides

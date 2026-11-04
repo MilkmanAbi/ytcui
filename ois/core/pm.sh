@@ -236,7 +236,12 @@ ois_pm_do_install() {
         *)
             # Linux/BSD: build the command, elevate if not root.
             _pi_cmd="$(ois_pm_install_cmd "$@")" || return 1
-            if [ "$OIS_IS_ROOT" = "yes" ]; then
+            if [ "${OIS_IS_TERMUX:-no}" = "yes" ]; then
+                # Termux's apt/dpkg installs into its own private $PREFIX as
+                # the invoking user -- there is no root on Termux, and none
+                # is needed here, so never try to elevate.
+                sh -c "$_pi_cmd"
+            elif [ "$OIS_IS_ROOT" = "yes" ]; then
                 sh -c "$_pi_cmd"
             elif [ "$OIS_SUDO" != "none" ]; then
                 ois_priv sh -c "$_pi_cmd"
@@ -276,8 +281,12 @@ ois_pm_refresh_index() {
         brew)     ois_brew update >/dev/null 2>&1 || : ;;
         macports) [ "$OIS_IS_ROOT" = yes ] && port selfupdate >/dev/null 2>&1 || \
                   { [ "$OIS_SUDO" != none ] && ois_priv port selfupdate >/dev/null 2>&1; } || : ;;
-        apt)      { [ "$OIS_IS_ROOT" = yes ] && apt-get update >/dev/null 2>&1; } || \
-                  { [ "$OIS_SUDO" != none ] && ois_priv apt-get update >/dev/null 2>&1; } || : ;;
+        apt)      if [ "${OIS_IS_TERMUX:-no}" = "yes" ]; then
+                      apt-get update >/dev/null 2>&1 || :
+                  else
+                      { [ "$OIS_IS_ROOT" = yes ] && apt-get update >/dev/null 2>&1; } || \
+                      { [ "$OIS_SUDO" != none ] && ois_priv apt-get update >/dev/null 2>&1; } || :
+                  fi ;;
     esac
     return 0
 }

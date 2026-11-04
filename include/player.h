@@ -2,6 +2,8 @@
 
 #include "types.h"
 #include <string>
+#include <vector>
+#include <utility>
 #include <sys/types.h>
 #include "mpv_ipc.h"
 
@@ -14,6 +16,9 @@ struct PlayerOptions {
     bool no_cache          = false;  // --no-cache: disables mpv demuxer cache (debug)
     bool verbose_mpv       = false;  // --mpv-verbose: don't silence mpv terminal output
     int  volume            = 80;     // default volume (--volume)
+    int  preferred_height  = 0;      // 0 = best available; set from config_.preferred_height
+    BackendKind backend    = BackendKind::YtcuiDl;  // runtime backend for play_direct()
+    std::string cookies_file;        // path to cookies file for ytcui-we backend
 };
 
 class Player {
@@ -23,6 +28,7 @@ public:
 
     // Apply session options (call before first play())
     void set_options(const PlayerOptions& opts) { opts_ = opts; }
+    const PlayerOptions& get_options() const { return opts_; }
 
     void play(const std::string& url, const std::string& title, PlayMode mode);
     void stop();
@@ -52,6 +58,10 @@ public:
     bool   have_progress() const;
 
     static bool is_available();
+
+    // Returns {height, label} pairs sorted high→low for the most recently
+    // resolved video. Empty if no ytcui-dl resolve has succeeded yet.
+    std::vector<std::pair<int, std::string>> resolution_rungs() const;
 
 private:
     pid_t mpv_pid_ = -1;

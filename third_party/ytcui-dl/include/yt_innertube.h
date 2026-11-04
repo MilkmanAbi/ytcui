@@ -1,4 +1,5 @@
 #pragma once
+#include "yt_cookie_policy.h"
 /*
  * ytcui-dl — yt_innertube.h
  *
@@ -227,7 +228,7 @@ inline std::string text_of(yj::Val node) {
 inline std::string gen_cpn() {
     static const char* alpha =
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
-    static std::mt19937 rng(std::random_device{}());
+    static thread_local std::mt19937 rng(std::random_device{}());
     std::uniform_int_distribution<int> d(0, 63);
     std::string r(16, ' ');
     for (auto& c : r) c = alpha[d(rng)];
@@ -385,8 +386,10 @@ public:
             }
             if (field.size() < 7) continue;
             std::string_view domain = field[0], name = field[5], value = field[6];
-            if (domain.find("youtube.com") == std::string_view::npos &&
-                domain.find("google.com") == std::string_view::npos) continue;
+            if (!youtube_cookie_domain(domain) || name.empty() ||
+                !cookie_field_safe(name) || !cookie_field_safe(value) ||
+                name.find_first_of(";=") != std::string_view::npos ||
+                value.find(';') != std::string_view::npos) continue;
             if (!cookies.empty()) cookies += "; ";
             cookies.append(name); cookies += '='; cookies.append(value);
             if (name == "SAPISID" || name == "__Secure-3PAPISID")

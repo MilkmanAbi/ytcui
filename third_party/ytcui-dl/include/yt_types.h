@@ -112,7 +112,7 @@ struct StreamFormat {
 };
 
 // Accepts a bare id, a watch URL, youtu.be, shorts, embed, or a live URL.
-// Lives here rather than in a CLI translation unit because ytcui-we needs the
+// Lives here rather than in a CLI translation unit because ytcui-dl session needs the
 // same parsing and two copies of it would drift.
 inline std::string extract_video_id(const std::string& s) {
     if (s.size() == 11 && s.find('/') == std::string::npos &&

@@ -83,6 +83,8 @@ private:
     void apply_timer_input();       // parse and arm the typed duration
     void show_share_menu(const std::string& url);
     void switch_backend(BackendKind k);
+    void open_res_menu();              // populate res_labels/heights from player ladder
+    void apply_resolution(int height); // set preferred_height + restart playback
     void tick_timer();              // called each frame; pauses mpv when due
     void start_play(const Video& v, PlayMode mode);     // single entry for all playback starts
     void sync_mode_transition(int from, int to);         // called when ui_mode changes

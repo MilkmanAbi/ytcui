@@ -124,7 +124,7 @@ private:
         return ((uint32_t)buf_[o] << 24) | ((uint32_t)buf_[o + 1] << 16) |
                ((uint32_t)buf_[o + 2] << 8) | buf_[o + 3];
     }
-    bool in_range(size_t o, size_t n) const { return o + n <= buf_.size(); }
+    bool in_range(size_t o, size_t n) const { return o <= buf_.size() && n <= buf_.size() - o; }
 
     // SQLite varint: big-endian 7 bits per byte, up to 8 bytes, with the ninth
     // byte contributing a full 8 bits.
@@ -305,15 +305,18 @@ private:
         row.reserve(types.size());
         for (uint64_t t : types) {
             Value v;
-            auto need = [&](size_t want) { return body + want <= n; };
+            auto need = [&](size_t want) { return body <= n && want <= n - body; };
             if (t == 0) { v.kind = Value::Null; }
             else if (t >= 1 && t <= 6) {
                 static const int sz[] = {0, 1, 2, 3, 4, 6, 8};
                 const int w = sz[t];
                 if (!need((size_t)w)) return false;
-                int64_t x = (p[body] & 0x80) ? -1 : 0;   // sign-extend
-                for (int b = 0; b < w; ++b) x = (x << 8) | p[body + b];
-                v.kind = Value::Int; v.i = x; body += w;
+                uint64_t bits = 0;
+                for (int b = 0; b < w; ++b) bits = (bits << 8) | p[body + b];
+                if ((p[body] & 0x80) && w < 8) bits |= UINT64_MAX << (w * 8);
+                v.kind = Value::Int;
+                v.i = bits & (uint64_t{1} << 63) ? -1 - static_cast<int64_t>(~bits) : static_cast<int64_t>(bits);
+                body += w;
             } else if (t == 7) {
                 if (!need(8)) return false;
                 uint64_t bits = 0;

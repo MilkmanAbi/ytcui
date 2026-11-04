@@ -595,14 +595,29 @@ int App::run() {
                 ? "Loop on — will restart when done (^_^)" : "Loop off";
             continue;
         }
-        // Ctrl-B: backend toggle (ytcui-dl <-> yt-dlp)
+        // Ctrl-B: backend cycle (ytcui-dl → yt-dlp → ytcui-we → ytcui-dl)
         if (ch == 0x02) {
-            switch_backend(state_.active_backend == BackendKind::YtcuiDl
-                           ? BackendKind::YtDlp : BackendKind::YtcuiDl);
+            {
+                BackendKind next = (state_.active_backend == BackendKind::YtcuiDl) ? BackendKind::YtDlp
+                                 : (state_.active_backend == BackendKind::YtDlp)   ? BackendKind::YtcuiWe
+                                 :                                                    BackendKind::YtcuiDl;
+                switch_backend(next);
+            }
             continue;
         }
 
         bool should_search = input_.handle(ch, state_);
+
+        // ── Resolution menu requests (set by input.cpp, resolved here) ────────
+        if (state_.res_menu_requested) {
+            state_.res_menu_requested = false;
+            open_res_menu();
+        }
+        if (state_.pending_res_height >= 0) {
+            int h = state_.pending_res_height;
+            state_.pending_res_height = -1;
+            apply_resolution(h);
+        }
 
         // ── Status message dispatch ───────────────────────────────────────────
 
@@ -1517,9 +1532,10 @@ void App::handle_settings_key(int ch) {
             } else if (state_.settings_tab == 2) {
                 // General tab: cycle values
                 if (state_.settings_sel == 0) {
-                    // Backend: cycle ytcui-dl → yt-dlp → ytcui-dl
-                    BackendKind next = (config_.backend == BackendKind::YtcuiDl)
-                                       ? BackendKind::YtDlp : BackendKind::YtcuiDl;
+                    // Backend: cycle ytcui-dl → yt-dlp → ytcui-we → ytcui-dl
+                    BackendKind next = (config_.backend == BackendKind::YtcuiDl) ? BackendKind::YtDlp
+                                     : (config_.backend == BackendKind::YtDlp)   ? BackendKind::YtcuiWe
+                                     :                                              BackendKind::YtcuiDl;
                     switch_backend(next);
                 } else if (state_.settings_sel == 1) {
                     // UI mode: cycle auto → normal → streamlined
@@ -1677,14 +1693,60 @@ void App::switch_backend(BackendKind k) {
     state_.active_backend = k;
     config_.backend = k;
     config_.save();
-    const char* name = (k == BackendKind::YtcuiDl) ? "ytcui-dl (native)" : "yt-dlp";
+    const char* name = (k == BackendKind::YtcuiDl) ? "ytcui-dl (native)"
+                     : (k == BackendKind::YtcuiWe)  ? "ytcui-we (session)"
+                     :                                 "yt-dlp";
     state_.status_message = std::string("Backend: ") + name;
     Log::write("Backend switched to %s", name);
+}
+
+void App::open_res_menu() {
+    auto rungs = player_.resolution_rungs();
+    if (rungs.empty()) {
+        state_.status_message = "No resolution data yet — play a video first";
+        return;
+    }
+    state_.res_labels.clear();
+    state_.res_heights.clear();
+    // Prepend "Best available" (height 0) so user can reset to auto
+    state_.res_labels.push_back("Best available");
+    state_.res_heights.push_back(0);
+    for (auto& [h, lab] : rungs) {
+        state_.res_labels.push_back(lab);
+        state_.res_heights.push_back(h);
+    }
+    // Set cursor to current preferred height
+    state_.res_sel = 0;
+    for (int i = 0; i < (int)state_.res_heights.size(); i++) {
+        if (state_.res_heights[i] == config_.preferred_height) {
+            state_.res_sel = i;
+            break;
+        }
+    }
+    state_.show_res_menu = true;
+    state_.focus = Panel::ResMenu;
+}
+
+void App::apply_resolution(int height) {
+    config_.preferred_height = height;
+    config_.save();
+    PlayerOptions opts = player_.get_options();
+    opts.preferred_height = height;
+    player_.set_options(opts);
+    state_.show_res_menu = false;
+    state_.focus = Panel::Results;
+    std::string label = (height == 0) ? "auto" : std::to_string(height) + "p";
+    state_.status_message = "Quality: " + label;
+    // If currently playing video, restart to apply the new resolution
+    if (state_.is_playing && !state_.stream_now.empty()) {
+        start_play(state_.stream_now, state_.play_mode);
+    }
 }
 
 void App::start_play(const Video& v, PlayMode mode) {
     state_.now_playing_id = v.id;
     state_.stream_now     = v;
+    state_.play_mode      = mode;
     user_stopped_         = false;
     {
         std::lock_guard<std::mutex> lk(sb_mutex_);
@@ -1692,6 +1754,12 @@ void App::start_play(const Video& v, PlayMode mode) {
         sb_video_id_.clear();
     }
     sb_last_seek_ = {};
+    // Sync runtime options into PlayerOptions before each play.
+    PlayerOptions opts = player_.get_options();
+    opts.preferred_height = config_.preferred_height;
+    opts.backend          = config_.backend;
+    opts.cookies_file     = config_.cookies_file;
+    player_.set_options(opts);
     player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, mode);
 }
 
