@@ -115,7 +115,9 @@ jobs:
           usesh: true
           prepare: pkg install -y cmake ninja openssl ncurses curl
           run: |
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCURSES_INCLUDE_PATH=/usr/local/include \
+              -DCURSES_LIBRARY=/usr/local/lib/libncursesw.so
             cmake --build build
             ./build/ytcui --version
             ./build/ytcui --colors
