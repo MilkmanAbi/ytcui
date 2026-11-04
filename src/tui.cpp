@@ -1763,7 +1763,7 @@ void TUI::draw_settings(const AppState& state) {
         struct Row { std::string label; std::string value; };
         Row rows[] = {
             { "Backend",           state.active_backend == BackendKind::YtcuiDl ? "ytcui-dl  (native)"
-                                 : state.active_backend == BackendKind::YtcuiWe  ? "ytcui-we (session)"
+                                 : state.active_backend == BackendKind::YtcuiWe  ? "ytcui-we"
                                  :                                                  "yt-dlp" },
             { "UI mode",           state.config_mode },
             { "SponsorBlock",      state.sponsorblock_enabled ? "on" : "off" },

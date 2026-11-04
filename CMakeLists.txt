@@ -28,6 +28,7 @@ set(APP_SRCS
     src/input.cpp
     src/mpv_ipc.cpp
     src/player.cpp
+    src/player_we.cpp
     src/termcaps.cpp
     src/tui.cpp
     src/youtube.cpp
@@ -59,7 +60,10 @@ set(YTCUI_INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src          # so "core/timer.h" resolves to src/core/timer.h
     ${CMAKE_SOURCE_DIR}/third_party/ytcui-dl/include
-    ${CMAKE_SOURCE_DIR}/third_party/ytcui-we/include
+    # ytcui-we headers are intentionally NOT on the main include path.
+    # ytcui-we yj.h differs from ytcui-dl yj.h; including both in the same
+    # binary causes ODR violations. ytcui-we is a separate executable
+    # (third_party/ytcui-we-src) invoked via subprocess from player_we.cpp.
     ${CMAKE_SOURCE_DIR}/third_party/qrcodegen
     ${CURSES_INCLUDE_DIRS}
 )
@@ -77,7 +81,7 @@ target_compile_definitions(ytcui PRIVATE
     YTUI_VERSION="${YTCUI_VERSION_STR}"
     YTCUI_VERSION="${YTCUI_VERSION_STR}"
     USE_YTCUIDL          # default backend: ytcui-dl (native InnerTube, no yt-dlp dep)
-    USE_YTCUIWE          # ytcui-we cookie-session backend
+    # USE_YTCUIWE is no longer needed: ytcui-we is a subprocess, not a linked lib
 )
 
 target_link_libraries(ytcui PRIVATE
@@ -136,3 +140,27 @@ add_core_test(tests/test_sponsorblock.cpp)
 add_core_test(tests/test_watchstate.cpp)
 add_core_test(tests/test_share.cpp)
 add_core_test(tests/test_queue.cpp)
+
+# ── test_player_we: proves ytcui-we backend reaches real resolver ─────────────
+add_executable(test_player_we
+    tests/test_player_we.cpp
+    src/player_we.cpp
+    ${CORE_SRCS}
+    ${QRCODEGEN_SRCS}
+)
+target_include_directories(test_player_we PRIVATE ${CORE_TEST_INCLUDE_DIRS})
+target_compile_definitions(test_player_we PRIVATE
+    YTUI_VERSION="${YTCUI_VERSION_STR}"
+    YTCUI_VERSION="${YTCUI_VERSION_STR}"
+    USE_YTCUIDL)
+target_link_libraries(test_player_we PRIVATE ${CORE_TEST_LIBS})
+target_compile_options(test_player_we PRIVATE ${CORE_TEST_FLAGS})
+# Exit 77 = ctest SKIP (binary not found in environment); 0 = pass; 1 = fail
+add_test(NAME test_player_we COMMAND test_player_we)
+set_tests_properties(test_player_we PROPERTIES SKIP_RETURN_CODE 77)
+
+# ── ytcui-we companion executable ─────────────────────────────────────────────
+# Built as a completely separate binary to isolate its yj.h from ytcui-dl's yj.h
+# (ODR: both define namespace yj with differing implementations).
+# ytcui is a subprocess caller; it never links against ytcui-we headers.
+add_subdirectory(third_party/ytcui-we-src)

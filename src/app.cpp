@@ -1694,7 +1694,7 @@ void App::switch_backend(BackendKind k) {
     config_.backend = k;
     config_.save();
     const char* name = (k == BackendKind::YtcuiDl) ? "ytcui-dl (native)"
-                     : (k == BackendKind::YtcuiWe)  ? "ytcui-we (session)"
+                     : (k == BackendKind::YtcuiWe)  ? "ytcui-we"
                      :                                 "yt-dlp";
     state_.status_message = std::string("Backend: ") + name;
     Log::write("Backend switched to %s", name);

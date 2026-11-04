@@ -1,4 +1,5 @@
 #include "player.h"
+#include "player_we.h"
 #include "log.h"
 #include <cstring>
 #include <algorithm>
@@ -38,11 +39,10 @@ static std::vector<ytfast::StreamFormat> g_last_formats_;
 #endif  // USE_YTCUIDL
 
 // ─── ytcui-we backend ──────────────────────────────────────────────────────────
-// ytcui-we (we_formats.h, yt_youtube.h) shares yj.h/yjw.h names with ytcui-dl
-// but implements them differently — both cannot be included in one TU.
-// The ytcui-we resolve path lives in a separate TU (player_we.cpp, future work).
-// Runtime dispatch: BackendKind::YtcuiWe currently falls through to ytcui-dl
-// and logs the stub so the UI + config plumbing is verifiable now.
+// ytcui-we yj.h differs from ytcui-dl yj.h — linking both into the same binary
+// causes ODR violations. The fix: ytcui-we is a separate executable; ytcui calls
+// it via subprocess (player_we.cpp) with --mpv-json and parses its output.
+// No ytcui-we headers are included anywhere in the ytcui binary.
 
 namespace ytui {
 
@@ -558,17 +558,25 @@ void Player::play_piped(const std::string& url, const std::string& title, PlayMo
 void Player::play_direct(const std::string& url, const std::string& title) {
     std::string vol = vol_flag(opts_.volume);
     StreamURLs streams;
-#if defined(USE_YTCUIWE) && defined(USE_YTCUIDL)
     if (opts_.backend == BackendKind::YtcuiWe) {
-        // ytcui-we resolver lives in a separate TU (player_we.cpp, future work)
-        // to avoid yj.h/yjw.h ODR collisions with ytcui-dl.
-        // Fall through to ytcui-dl for now.
-        Log::write("[ytcui-we] stub — falling back to ytcui-dl");
-    }
-    streams = resolve_stream_urls(url, opts_.preferred_height);
-#else
-    streams = resolve_stream_urls(url, opts_.preferred_height);
+        // Subprocess adapter: no ytcui-we headers in this binary (ODR isolation).
+        try {
+            auto wi = we_resolve(url, opts_.preferred_height, opts_.cookies_file);
+            streams.video_url   = wi.video_url;
+            streams.audio_url   = wi.audio_url;
+            streams.user_agent  = wi.user_agent;
+            streams.ok          = true;
+        } catch (const std::exception& e) {
+            Log::write("[ytcui-we] resolve failed: %s — falling back to ytcui-dl", e.what());
+#ifdef USE_YTCUIDL
+            streams = resolve_stream_urls(url, opts_.preferred_height);
 #endif
+        }
+    } else {
+#ifdef USE_YTCUIDL
+        streams = resolve_stream_urls(url, opts_.preferred_height);
+#endif
+    }
 
     std::vector<std::string> args = {
         "mpv",
@@ -610,12 +618,8 @@ void Player::play_direct(const std::string& url, const std::string& title) {
 
         Log::write("Direct play (fast): vol=%d backend=%s",
                    opts_.volume,
-#ifdef USE_YTCUIDL
-                   "ytcui-dl"
-#else
-                   "yt-dlp"
-#endif
-        );
+                   opts_.backend == BackendKind::YtcuiWe ? "ytcui-we" :
+                   opts_.backend == BackendKind::YtcuiDl ? "ytcui-dl" : "yt-dlp");
     } else {
         // Fallback: let mpv use its built-in yt-dlp integration
         Log::write("Direct play (slow fallback --ytdl=yes): %s", url.c_str());
