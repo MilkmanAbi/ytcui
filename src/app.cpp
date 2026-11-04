@@ -472,6 +472,19 @@ int App::run() {
         tick_sponsorblock();
         state_.timer_status = timer_.active() ? timer_.describe() : "";
 
+        // Poll background download (non-blocking): notify when it finishes.
+        if (download_pid_ > 0) {
+            int wstatus = 0;
+            pid_t r = ::waitpid(download_pid_, &wstatus, WNOHANG);
+            if (r == download_pid_) {
+                download_pid_ = -1;
+                if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0)
+                    state_.status_message = "Download complete! Files in ~/Downloads (^_^)b";
+                else
+                    state_.status_message = "Download failed — check ~/Downloads (;_;)";
+            }
+        }
+
         // ── Resolve UI mode ───────────────────────────────────────────────────
         // Default is the full ("normal") UI. We only drop to the streamlined
         // music-player layout when the terminal is RELIABLY very narrow: a
@@ -1089,6 +1102,8 @@ void App::do_save(int choice) {
                    cookies.c_str(), nullptr);
             _exit(127);
         }
+        // Track the PID so the render loop can notify on completion.
+        if (pid > 0) download_pid_ = pid;
         state_.status_message = "Downloading MP4 + MP3 to ~/Downloads... (>w<)b";
     }
 }

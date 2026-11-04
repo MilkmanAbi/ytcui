@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <sys/types.h>
 
 namespace ytui {
 
@@ -51,6 +52,8 @@ private:
     std::chrono::steady_clock::time_point sb_last_seek_{};  // seek-storm latch
 
     bool user_stopped_ = false;  // true when the user explicitly stopped playback
+
+    pid_t download_pid_ = -1;   // PID of in-progress background download, or -1
 
     void build_actions();
     void build_playlist_actions();

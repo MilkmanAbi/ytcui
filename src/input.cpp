@@ -259,6 +259,37 @@ bool InputHandler::handle(int ch, AppState& state) {
         int start_y = 6, end_y = state.term_h - (state.show_status_bar ? 4 : 1);
         if (my <= start_y || my >= end_y) return false;
 
+        // Sort menu is a floating overlay — consume clicks inside it here,
+        // before any content-area handling (handle_sort_menu's KEY_MOUSE case
+        // is never reached because getmouse() is consumed above).
+        if (state.focus == Panel::SortMenu) {
+            int pw   = std::min(56, state.term_w - 4);
+            int ph   = 10;
+            int px   = std::max(0, (state.term_w - pw) / 2);
+            int py   = std::max(0, (state.term_h - ph) / 2);
+            int half = pw / 2;
+            if (ev.y >= py + 2 && ev.y <= py + ph - 2) {
+                int row = ev.y - (py + 2);
+                if (ev.x >= px && ev.x < px + half) {
+                    if (row >= 0 && row < 4) {
+                        state.sort_col = 0; state.sort_row = row;
+                        state.status_message = "__SORT_APPLIED__";
+                        state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+                    }
+                } else if (ev.x >= px + half && ev.x < px + pw) {
+                    if (row >= 0 && row < 6) {
+                        state.sort_col = 1; state.sort_row = row;
+                        state.status_message = "__SORT_APPLIED__";
+                        state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+                    }
+                }
+            } else {
+                // Click outside the sort menu — dismiss with no change.
+                state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+            }
+            return false;
+        }
+
         // Playlist list tab
         if (state.active_tab == Tab::Playlists &&
             (state.focus == Panel::PlaylistList || state.focus == Panel::Tabs)) {
@@ -267,8 +298,12 @@ bool InputHandler::handle(int ch, AppState& state) {
                 state.selected_playlist = row_idx + state.playlist_scroll;
                 state.focus = Panel::PlaylistList;
                 // Click on the color dot column (x 2-3) cycles the tag color.
+                // Click anywhere else opens the playlist immediately — no second
+                // click required, matching keyboard Enter from PlaylistList.
                 if (mx <= 3)
                     state.status_message = "__PLAYLIST_TAG__";
+                else
+                    state.status_message = "__OPEN_PLAYLIST__";
             }
             return false;
         }
@@ -665,7 +700,10 @@ void InputHandler::handle_tabs_input(int ch, AppState& state) {
             } else if (state.active_tab == Tab::Results && has_results) {
                 state.focus = Panel::Results;
             } else if (state.active_tab == Tab::Playlists) {
+                // Single Enter from the tab bar opens the selected playlist
+                // directly — consistent with the mouse click handler.
                 state.focus = Panel::PlaylistList;
+                state.status_message = "__OPEN_PLAYLIST__";
             }
             break;
     }
