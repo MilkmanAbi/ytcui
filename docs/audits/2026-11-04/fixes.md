@@ -40,3 +40,5 @@ The deterministic suite tests integration contracts without accessing user crede
 - actionlint 1.7.12 accepted CI, release and auto-tag workflows.
 
 These local checks do not substitute for the remote macOS/BSD/compiler matrix or prove every authenticated/live video works. No real browser credentials were used in validation.
+
+Remote CI exposed a NetBSD installed-companion loader failure (`libcurl.so.4` under pkgsrc). Installation now retains linked external dependency directories in RPATH, rather than depending on the build-tree RPATH or a test-only library-path override.

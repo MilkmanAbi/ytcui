@@ -9,6 +9,8 @@ project(ytcui VERSION ${YTCUI_VERSION_STR} LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Preserve pkgsrc/Homebrew/ports dependency directories after installation.
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 option(YTCUI_SANITIZE "Enable AddressSanitizer for runtime regression tests" OFF)
 if(YTCUI_SANITIZE)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
