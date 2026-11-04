@@ -201,7 +201,7 @@ bool InputHandler::handle(int ch, AppState& state) {
         if (ev.bstate & BUTTON5_PRESSED) {
             if      (state.focus == Panel::Actions)        { if (state.selected_action < (int)state.actions.size()-1) state.selected_action++; }
             else if (state.focus == Panel::BrowserPick)    { if (state.browser_pick_idx < (int)state.browser_choices.size()-1) state.browser_pick_idx++; }
-            else if (state.focus == Panel::PlaylistList)   { if (state.selected_playlist < (int)state.playlist_names.size() - 1) state.selected_playlist++; }
+            else if (state.focus == Panel::PlaylistList)   { if (state.selected_playlist < (int)state.playlist_names.size() - 2) state.selected_playlist++; }
             else if (state.focus == Panel::PlaylistView)   { if (state.playlist_video_count > 0 && state.playlist_video_idx < state.playlist_video_count - 1) state.playlist_video_idx++; }
             else if (state.focus == Panel::PlaylistActions){ if (state.selected_action < (int)state.actions.size()-1) state.selected_action++; }
             else scroll_results(+1);
@@ -297,15 +297,16 @@ bool InputHandler::handle(int ch, AppState& state) {
         // fixes the case where the user switched tabs via keyboard (focus stays
         // on Search/Results) but then tries to click a playlist row.
         if (state.active_tab == Tab::Playlists && state.current_playlist_id.empty()) {
-            int row_idx = my - start_y - 3; // offset for header rows
+            int row_idx = my - start_y - 3; // 3 header rows before first playlist
             if (row_idx >= 0) {
-                int max_idx = static_cast<int>(state.playlist_names.size()) - 1;
-                int idx = row_idx + state.playlist_scroll;
-                if (max_idx >= 0 && idx <= max_idx) {
+                // playlist_names[0] is always "Create new playlist"; actual
+                // playlists are at indices 1..size-1, so valid playlist indices
+                // are 0..size-2.
+                int n_pl  = static_cast<int>(state.playlist_names.size()) - 1;
+                int idx   = row_idx + state.playlist_scroll;
+                if (n_pl > 0 && idx < n_pl) {
                     state.selected_playlist = idx;
                     state.focus = Panel::PlaylistList;
-                    // Click on the color-dot column (x 0-3) cycles the tag.
-                    // Any other column opens the playlist immediately.
                     if (mx <= 3)
                         state.status_message = "__PLAYLIST_TAG__";
                     else
@@ -559,10 +560,12 @@ bool InputHandler::handle(int ch, AppState& state) {
                 state.active_tab = Tab::Playlists;
                 state.current_playlist_id.clear();
                 break;
+            case Panel::PlaylistList:
+                // Go up to the tab bar, NOT Search — the Playlists tab stays
+                // active so the user can see the list while picking a tab.
+                state.focus = Panel::Tabs;
+                break;
             case Panel::Results:
-                // Leave Results: go back to search box on the Feed tab.
-                // Staying on Tab::Results keeps the results visible and looks
-                // like nothing happened, so switch the tab away.
                 state.focus = Panel::Search;
                 state.active_tab = Tab::Feed;
                 break;
@@ -842,20 +845,27 @@ void InputHandler::handle_save_prompt(int ch, AppState& state) {
 // ─── Playlist list ────────────────────────────────────────────────────────────
 
 void InputHandler::handle_playlist_list(int ch, AppState& state) {
+    // playlist_names[0] is "Create new playlist"; actual playlists are 1..size-1.
+    // Valid selected_playlist range: 0 .. playlist_names.size()-2.
+    int n_pl = std::max(0, (int)state.playlist_names.size() - 1);
     switch (ch) {
         case 'j': case KEY_DOWN:
-            if (state.selected_playlist < (int)state.playlist_names.size() - 1)
+            if (state.selected_playlist < n_pl - 1)
                 state.selected_playlist++;
             break;
         case 'k': case KEY_UP:
             if (state.selected_playlist > 0) state.selected_playlist--;
             else state.focus = Panel::Tabs;
             break;
+        case 'h': case KEY_LEFT:
+            // Go up to tab bar (Escape is handled globally before reaching here,
+            // but h/left-arrow are not, so we need them here too).
+            state.focus = Panel::Tabs;
+            break;
         case '\n': case KEY_ENTER: case 'l': case KEY_RIGHT:
             state.status_message = "__OPEN_PLAYLIST__";
             break;
         case 'n':
-            // New playlist shortcut from list
             state.new_playlist_name.clear();
             state.focus = Panel::NewPlaylist;
             break;

@@ -520,6 +520,12 @@ int App::run() {
             }
         }
         if (state_.active_tab == Tab::Playlists) {
+            // Keep playlist_names fresh every frame so input.cpp navigation
+            // bounds are always valid.  refresh_playlist_names() is cheap
+            // (in-memory copy) and was previously only called from
+            // show_playlist_picker(), leaving playlist_names empty on a fresh
+            // launch and breaking all navigation until the picker was opened.
+            refresh_playlist_names();
             int n_pl = (int)library_.playlists().size();
             if (n_pl > 0)
                 state_.selected_playlist = std::clamp(state_.selected_playlist, 0, n_pl - 1);
