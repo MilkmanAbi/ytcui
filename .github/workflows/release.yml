@@ -84,8 +84,8 @@ jobs:
       - name: Validate macOS architecture
         if: runner.os == 'macOS'
         run: |
-          lipo -verify_arch "$EXPECTED_ARCH" dist/ytcui
-          lipo -verify_arch "$EXPECTED_ARCH" dist/ytcui-we
+          lipo dist/ytcui -verify_arch "$EXPECTED_ARCH"
+          lipo dist/ytcui-we -verify_arch "$EXPECTED_ARCH"
         env:
           EXPECTED_ARCH: ${{ matrix.arch }}
       - name: Archive and verify unpacked bundle
@@ -125,7 +125,7 @@ jobs:
           test "$RELEASE_TAG" = "v$(tr -d '[:space:]' < VERSION)"
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --draft --verify-tag \
-              --title "ytcui ${RELEASE_TAG}" --notes-file docs/release-install.md
+              --title "ytcui ${RELEASE_TAG}" --generate-notes
           fi
           gh release upload "$RELEASE_TAG" artifacts/*.tar.gz --clobber
           gh release edit "$RELEASE_TAG" --draft=false
