@@ -204,3 +204,10 @@ target_compile_definitions(test_app_lifetime PRIVATE YTUI_VERSION="${YTCUI_VERSI
 target_link_libraries(test_app_lifetime PRIVATE ${CORE_TEST_LIBS} ${CURSES_LIBRARIES})
 add_test(NAME test_app_lifetime COMMAND test_app_lifetime)
 add_test(NAME installed_bundle COMMAND ${CMAKE_COMMAND} "-DBUILD_DIR=${CMAKE_BINARY_DIR}" -P ${CMAKE_SOURCE_DIR}/tests/installed_bundle.cmake)
+
+add_executable(test_tui tests/test_tui.cpp src/tui.cpp src/termcaps.cpp src/input.cpp src/config.cpp ${CORE_SRCS} ${QRCODEGEN_SRCS})
+target_include_directories(test_tui PRIVATE ${YTCUI_INCLUDE_DIRS})
+target_compile_definitions(test_tui PRIVATE YTUI_VERSION="${YTCUI_VERSION_STR}" YTCUI_VERSION="${YTCUI_VERSION_STR}")
+target_link_libraries(test_tui PRIVATE ${CORE_TEST_LIBS} ${CURSES_LIBRARIES})
+add_test(NAME test_tui COMMAND test_tui)
+set_tests_properties(test_tui PROPERTIES TIMEOUT 120)

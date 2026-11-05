@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -105,7 +106,7 @@ std::vector<std::string> which_all(const std::string& program) {
 bool exists(const std::string& program) { return !which(program).empty(); }
 
 Result run(const std::vector<std::string>& argv, int timeout_ms,
-           std::size_t max_output) {
+           std::size_t max_output, const std::string* input, bool capture_output) {
     Result r;
     if (argv.empty()) return r;
 
@@ -113,8 +114,17 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
     if (::pipe(outp) != 0) return r;
     if (::pipe(errp) != 0) { ::close(outp[0]); ::close(outp[1]); return r; }
 
+    int in[2] = {-1, -1};
+    if (input && ::socketpair(AF_UNIX, SOCK_STREAM, 0, in) != 0) {
+        for (int fd : {outp[0], outp[1], errp[0], errp[1]}) ::close(fd);
+        return r;
+    }
+#ifdef SO_NOSIGPIPE
+    if (input) { int yes = 1; ::setsockopt(in[0], SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof yes); }
+#endif
     const pid_t pid = ::fork();
     if (pid < 0) {
+        if (input) { ::close(in[0]); ::close(in[1]); }
         ::close(outp[0]); ::close(outp[1]);
         ::close(errp[0]); ::close(errp[1]);
         return r;
@@ -126,10 +136,17 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
         ::dup2(errp[1], STDERR_FILENO);
         ::close(outp[1]);
         ::close(errp[1]);
+        if (!capture_output) {
+            const int null = ::open("/dev/null", O_WRONLY);
+            if (null >= 0) { ::dup2(null, STDOUT_FILENO); ::dup2(null, STDERR_FILENO); ::close(null); }
+        }
         // No stdin: a child that decides to prompt must fail rather than wait
         // forever behind a TUI that cannot show the prompt.
-        const int null = ::open("/dev/null", O_RDONLY);
-        if (null >= 0) { ::dup2(null, STDIN_FILENO); ::close(null); }
+        if (input) { ::close(in[0]); ::dup2(in[1], STDIN_FILENO); ::close(in[1]); }
+        else {
+            const int null = ::open("/dev/null", O_RDONLY);
+            if (null >= 0) { ::dup2(null, STDIN_FILENO); ::close(null); }
+        }
         // Its own process group, so the timeout below can kill the whole tree
         // -- yt-dlp spawns ffmpeg and friends.
         ::setpgid(0, 0);
@@ -142,6 +159,9 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
         ::_exit(127);                       // execvp failed: not on PATH
     }
 
+    bool in_open = input != nullptr;
+    size_t sent = 0;
+    if (input) { ::close(in[1]); ::fcntl(in[0], F_SETFL, O_NONBLOCK); }
     ::setpgid(pid, pid); // close the race before a very short timeout
     ::close(outp[1]);
     ::close(errp[1]);
@@ -154,16 +174,20 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
     bool out_open = true, err_open = true, reaped = false;
     int st = 0;
 
-    while (out_open || err_open || !reaped) {
+    while (out_open || err_open || in_open || !reaped) {
         if (!reaped) {
             pid_t result = ::waitpid(pid, &st, WNOHANG);
             if (result == pid || (result < 0 && errno == ECHILD)) reaped = true;
         }
-        if (!out_open && !err_open && reaped) break;
-        pollfd fds[2];
+        if (in_open && (reaped || sent == input->size())) {
+            ::close(in[0]); in_open = false;
+        }
+        if (!out_open && !err_open && !in_open && reaped) break;
+        pollfd fds[3];
         int n = 0;
         if (out_open) fds[n++] = pollfd{outp[0], POLLIN, 0};
         if (err_open) fds[n++] = pollfd{errp[0], POLLIN, 0};
+        if (in_open) fds[n++] = pollfd{in[0], POLLOUT, 0};
 
         int wait_ms = 20;
         if (deadline) {
@@ -180,6 +204,22 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
         if (pr == 0) continue;              // just a tick; re-check the clock
 
         for (int i = 0; i < n; ++i) {
+            if (in_open && fds[i].fd == in[0]) {
+                if (fds[i].revents & (POLLHUP | POLLERR | POLLNVAL)) { ::close(in[0]); in_open = false; }
+                else if (fds[i].revents & POLLOUT) {
+#ifdef MSG_NOSIGNAL
+                    constexpr int flags = MSG_NOSIGNAL;
+#else
+                    constexpr int flags = 0; // SO_NOSIGPIPE above on macOS
+#endif
+                    ssize_t wrote = ::send(in[0], input->data() + sent, input->size() - sent, flags);
+                    if (wrote > 0) sent += static_cast<size_t>(wrote);
+                    else if (wrote < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        ::close(in[0]); in_open = false;
+                    }
+                }
+                continue;
+            }
             if (!(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
             const bool is_out = fds[i].fd == outp[0];
             char buf[16384];
@@ -208,6 +248,7 @@ Result run(const std::vector<std::string>& argv, int timeout_ms,
 
     ::close(outp[0]);
     ::close(errp[0]);
+    if (in_open) ::close(in[0]);
 
     if (r.timed_out) {
         // The whole group: yt-dlp's children would otherwise outlive it.

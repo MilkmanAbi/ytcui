@@ -50,6 +50,13 @@ std::string clip_display(std::string_view s, int cols,
 // fixed-width table columns.
 std::string pad_display(std::string_view s, int cols);
 
+// Safe, single-line output measured with the same locale tables curses uses.
+// Controls, bidi overrides and terminal-dependent joiners/selectors are removed.
+std::string terminal_sanitize(std::string_view text, bool unicode = true);
+int terminal_width(std::string_view text, bool unicode = true);
+std::string terminal_clip(std::string_view text, int cols, bool unicode = true,
+                          bool ellipsis = true);
+
 // Display formatting shared by both backends.
 //
 // These exist so that switching backend does not reformat the list under the

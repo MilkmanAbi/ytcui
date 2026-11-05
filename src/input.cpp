@@ -1,4 +1,6 @@
 #include "input.h"
+#include "core/text.h"
+#include "termcaps.h"
 #include <algorithm>
 #include <wchar.h>
 
@@ -146,13 +148,114 @@ static bool stream_handle(int ch, AppState& state) {
 
 bool InputHandler::handle(int ch, AppState& state) {
     if (ch == ERR) return false;
+    if (state.show_share) state.focus=Panel::ShareMenu;
+
+    const bool text_blocked = state.focus == Panel::ShareMenu || state.focus == Panel::TimerPrompt ||
+        state.focus == Panel::QueueView || state.focus == Panel::ResMenu || state.focus == Panel::BrowserPick ||
+        state.focus == Panel::SavePrompt || state.focus == Panel::PlaylistPick || state.focus == Panel::SortMenu || state.focus == Panel::Shortcuts;
+    std::string* target = nullptr;
+    if (state.focus == Panel::NewPlaylist) target = &state.new_playlist_name;
+    else if ((!text_blocked && state.ui_mode == 1 && state.stream_screen == static_cast<int>(StreamScreen::Search)) ||
+             (state.ui_mode == 0 && state.focus == Panel::Search)) target = &state.search_query;
+    if (target != utf8_target_) { utf8_pending_.clear(); utf8_target_ = target; }
+    if (target && ch >= 128 && ch <= 255) {
+        unsigned char byte = static_cast<unsigned char>(ch);
+        if (byte >= 0xc2 && byte <= 0xf4) utf8_pending_.assign(1, static_cast<char>(byte));
+        else if (byte >= 0x80 && byte <= 0xbf && !utf8_pending_.empty()) utf8_pending_ += static_cast<char>(byte);
+        else utf8_pending_.clear();
+        if (!utf8_pending_.empty()) {
+            unsigned char lead = static_cast<unsigned char>(utf8_pending_[0]);
+            size_t need = lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : 4;
+            if (utf8_pending_.size() == need) {
+                const auto decoded = ytcui::txt::decode_utf8(utf8_pending_);
+                size_t limit = target == &state.new_playlist_name ? 60 : 4096;
+                if (decoded.size() == 1 && ytcui::txt::encode_utf8(decoded[0]) == utf8_pending_ &&
+                    target->size()+need <= limit) *target += utf8_pending_;
+                utf8_pending_.clear();
+            }
+        }
+        return false;
+    }
+    utf8_pending_.clear(); // an ASCII/special key interrupts an incomplete sequence, never gets swallowed
+    if (target == &state.new_playlist_name) {
+        if (ch == KEY_MOUSE) { MEVENT event; getmouse(&event); } else handle_new_playlist(ch, state);
+        return false;
+    }
+    if (target && target->size() >= 4096 && ch >= 32 && ch < 127) return false;
 
     // Modal overlays take priority regardless of UI mode so TimerPrompt,
     // QueueView and ShareMenu are reachable in streamlined mode too.
-    if (state.focus == Panel::TimerPrompt) { handle_timer_prompt(ch, state); return false; }
+    if (state.focus == Panel::TimerPrompt) { if (ch == KEY_MOUSE) { MEVENT event; getmouse(&event); } else handle_timer_prompt(ch, state); return false; }
     if (state.focus == Panel::QueueView)   { handle_queue_view(ch, state);   return false; }
-    if (state.focus == Panel::ShareMenu)   { state.show_share = false; state.focus = Panel::Results; return false; }
+    if (state.focus == Panel::ShareMenu) {
+        if (ch == KEY_MOUSE) { MEVENT event; getmouse(&event); return false; }
+        if (ch == KEY_RESIZE) return false;
+        if (ch == 'c') state.status_message = "__SHARE_COPY__";
+        else if (ch == 'm') {
+            const auto& caps=TermCaps::get();
+            const bool default_cells = caps.id==TermId::AppleTerminal || !caps.blocks_native || !caps.unicode ||
+                caps.mono_hardening || state.theme==Theme::MLterm;
+            state.share_mode = state.share_mode == 1 || (state.share_mode == 0 && default_cells) ? 2 : 1;
+        } else if (ch == 27 || ch == 'q' || ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            state.show_share = false; state.focus = state.share_return_focus;
+        }
+        return false;
+    }
+
+    if (ch == KEY_RESIZE) return false;
+    if (state.focus == Panel::Shortcuts) {
+        if (ch == KEY_MOUSE) { MEVENT event; getmouse(&event); }
+        else { state.show_shortcuts = false; state.focus = state.results.empty() ? Panel::Search : Panel::Results; }
+        return false;
+    }
+    if (state.focus == Panel::SortMenu) { handle_sort_menu(ch, state); return false; }
+    const bool popup = state.focus == Panel::BrowserPick || state.focus == Panel::SavePrompt ||
+                       state.focus == Panel::PlaylistPick || state.focus == Panel::NewPlaylist;
+    if (popup) {
+        if (ch == KEY_MOUSE) {
+            MEVENT event; if (getmouse(&event) != OK) return false;
+            int pw=0, ph=0, first=0, top=0;
+            if (state.focus==Panel::BrowserPick) { pw=std::min(40,state.term_w-4); ph=std::min(static_cast<int>(state.browser_choices.size())+4,state.term_h-2); top=2; first=std::max(0,state.browser_pick_idx-(ph-3)+1); }
+            else if (state.focus==Panel::SavePrompt) { pw=std::min(44,state.term_w-4);ph=7;top=2; }
+            else if (state.focus==Panel::PlaylistPick) {
+                pw=std::min(52,state.term_w-4);ph=std::min(16,state.term_h-6);top=1;
+                first=std::max(0,state.playlist_pick_idx-(ph-3)+1);
+            }
+            int px=(state.term_w-pw)/2, py=(state.term_h-ph)/2;
+            if (pw<10 || ph<4 || ph>state.term_h-2 || event.x<=px || event.x>=px+pw-1) return false;
+            if (event.bstate & BUTTON4_PRESSED) ch=KEY_UP;
+            else if (event.bstate & BUTTON5_PRESSED) ch=KEY_DOWN;
+            else if ((event.bstate & (BUTTON1_CLICKED|BUTTON1_PRESSED)) && event.y>=py+top && event.y<py+ph-1) {
+                int index=first+event.y-py-top;
+                if (state.focus==Panel::BrowserPick && index<static_cast<int>(state.browser_choices.size())) state.browser_pick_idx=index;
+                else if (state.focus==Panel::SavePrompt && index<2) state.save_prompt_idx=index;
+                else if (state.focus==Panel::PlaylistPick && index<static_cast<int>(state.playlist_names.size())) state.playlist_pick_idx=index;
+                else return false;
+                ch='\n';
+            } else return false;
+        }
+        if (state.focus == Panel::BrowserPick) { handle_browser_pick(ch, state); return false; }
+        if (state.focus == Panel::SavePrompt) { handle_save_prompt(ch, state); return false; }
+        if (state.focus == Panel::PlaylistPick) { handle_playlist_pick(ch, state); return false; }
+    }
     if (state.focus == Panel::ResMenu) {
+        state.res_sel = std::clamp(state.res_sel, 0, std::max(0, static_cast<int>(state.res_labels.size())-1));
+        if (ch == KEY_MOUSE) {
+            MEVENT event;
+            if (getmouse(&event) != OK) return false;
+            int pw = std::min(32, state.term_w-4), ph = std::min(static_cast<int>(state.res_labels.size())+4, state.term_h-4);
+            int px = (state.term_w-pw)/2, py = (state.term_h-ph)/2, vis = ph-3;
+            if (pw < 12 || ph < 4) return false;
+            if (event.bstate & BUTTON4_PRESSED) ch = KEY_UP;
+            else if (event.bstate & BUTTON5_PRESSED) ch = KEY_DOWN;
+            else if ((event.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) && event.x > px && event.x < px+pw-1) {
+                int start = std::max(0, state.res_sel-vis+1);
+                int index = start+event.y-py-1;
+                if (event.y > py && event.y < py+ph-2 && index >= 0 && index < static_cast<int>(state.res_labels.size())) {
+                    state.res_sel = index; ch = '\n';
+                } else return false;
+            } else return false;
+        }
         if (ch == 27) {  // Esc — close
             state.show_res_menu = false;
             state.focus = Panel::Results;
@@ -603,47 +706,6 @@ bool InputHandler::handle_search_input(int ch, AppState& state) {
         default:
             if (ch >= 32 && ch < 127) {
                 state.search_query += (char)ch;
-            } else if (ch >= 128 && ch <= 255) {
-                // A raw UTF-8 lead byte from getch()'s byte-at-a-time delivery.
-                // Anything >= 256 is an ncurses symbolic KEY_* code (arrows,
-                // function keys, Home/End/PageUp/Down, kitty-protocol keys,
-                // ...), never a byte of input text — some of those numeric
-                // values happen to collide with the 0xC0-0xFF lead-byte
-                // pattern once truncated to a byte, which used to make this
-                // branch "swallow" an unrelated special key as if it were the
-                // start of a multibyte character (then, worse, consume the
-                // *next* real keystroke(s) hunting for continuation bytes
-                // that were never coming). Bounding this to 128..255 is what
-                // the old `ch >= 128` check should have done from the start.
-                unsigned char lead = (unsigned char)ch;
-                int need = 0;
-                if      ((lead & 0xE0) == 0xC0) need = 1;
-                else if ((lead & 0xF0) == 0xE0) need = 2;
-                else if ((lead & 0xF8) == 0xF0) need = 3;
-                else return false;
-                size_t mark = state.search_query.size();
-                state.search_query += (char)ch;
-                timeout(50);
-                for (int i = 0; i < need; i++) {
-                    int b = getch();
-                    if (b == ERR || b > 255 || (b & 0xC0) != 0x80) {
-                        // Not a continuation byte — it's the next real event
-                        // (keystroke, click, resize...). Push it back instead
-                        // of swallowing it, and drop the WHOLE partial
-                        // sequence built so far (not just the last byte) so a
-                        // truncated multibyte char can't linger in the query
-                        // and corrupt every glyph rendered after it.
-                        if (b != ERR) ungetch(b);
-                        state.search_query.resize(mark);
-                        break;
-                    }
-                    state.search_query += (char)b;
-                }
-                // Restore the app's normal 33ms poll rate (set once in
-                // TUI::init()) — this used to hardcode 100ms, permanently
-                // slowing input responsiveness for the rest of the session
-                // after the very first non-ASCII character was typed.
-                timeout(33);
             }
             return false;
     }
@@ -996,6 +1058,13 @@ void InputHandler::handle_timer_prompt(int ch, AppState& state) {
 // ─── Queue view ───────────────────────────────────────────────────────────────
 void InputHandler::handle_queue_view(int ch, AppState& state) {
     int n = (int)state.queue_items.size();
+    state.queue_sel = std::clamp(state.queue_sel, 0, std::max(0,n-1));
+    if (ch == KEY_MOUSE) {
+        MEVENT event; if (getmouse(&event) != OK) return;
+        if (event.bstate & BUTTON4_PRESSED) ch = KEY_UP;
+        else if (event.bstate & BUTTON5_PRESSED) ch = KEY_DOWN;
+        else return;
+    }
     switch (ch) {
         case 'j': case KEY_DOWN:
             if (state.queue_sel < n - 1) state.queue_sel++;

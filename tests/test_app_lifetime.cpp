@@ -10,6 +10,10 @@
 
 namespace ytui {
 struct AppTestAccess {
+    static bool opens_share(App& app) {
+        app.state_.focus=Panel::Actions;app.show_share_menu("https://youtu.be/jNQXAC9IVRw");
+        return app.state_.show_share && app.state_.focus==Panel::ShareMenu && app.state_.share_return_focus==Panel::Actions;
+    }
     static bool start(App& app, const std::string& id) { return app.start_sb_fetch(id); }
     static void video(App& app, const std::string& id) { app.state_.now_playing_id = id; }
     static bool fetching(App& app) { return app.sb_fetching_.load(); }
@@ -39,6 +43,7 @@ int main() {
         return segments;
     });
     using Access = ytui::AppTestAccess;
+    CHECK(Access::opens_share(*app));
     Access::video(*app, "A"); CHECK(Access::start(*app, "A")); entered_a.get_future().wait();
     Access::video(*app, "B"); CHECK(!Access::start(*app, "B"));
     release_a.set_value();

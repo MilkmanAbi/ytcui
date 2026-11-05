@@ -209,7 +209,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y cmake ninja-build libssl-dev zlib1g-dev libncursesw5-dev libcurl4-openssl-dev
       - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DYTCUI_SANITIZE=ON
-      - run: cmake --build build --parallel 2 --target test_app_lifetime test_runtime
-      - run: ctest --test-dir build --output-on-failure -R '^(test_app_lifetime|test_runtime)$'
+      - run: cmake --build build --parallel 2 --target test_app_lifetime test_runtime test_tui
+      - run: ctest --test-dir build --output-on-failure -R '^(test_app_lifetime|test_runtime|test_tui)$'
         env:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1

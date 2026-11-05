@@ -5,6 +5,8 @@
 #include "log.h"
 #include "core/share.h"
 #include "core/layout.h"
+#include "core/text.h"
+#include <cstdarg>
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -37,89 +39,36 @@ static inline chtype mlterm_fx_filter(chtype a) {
 #define attron(a)  wattron(stdscr, mlterm_fx_filter((chtype)(a)))
 #define attroff(a) wattroff(stdscr, mlterm_fx_filter((chtype)(a)))
 
-// ─── UTF-8 helpers ───────────────────────────────────────────────────────────
-//
-// Root cause of the M-hM-... mojibake was twofold:
-//  1. Linking against -lncurses (narrow) instead of -lncursesw (wide).
-//     Narrow ncurses treats every byte > 127 as a "Meta" character and renders
-//     it as M-x. Wide ncurses (ncursesw) understands multibyte locale strings.
-//  2. mbtowc() doesn't carry state across calls — mbrtowc() does.
-//
-// With ncursesw + setlocale(LC_ALL,"") + mbrtowc, mvprintw("%s", utf8_str)
-// works correctly for CJK, emoji, and all Unicode.
-
-// Characters that corrupt terminal layout if drawn: C0/C1 control codes, BiDi
-// overrides (can visually reorder a line), and zero-width / soft-hyphen code
-// points whose width terminals disagree on. YouTube titles occasionally carry
-// these; we drop them so a title can never scramble the UI.
-static inline bool wc_problematic(wchar_t wc) {
-    if (wc < 0x20) return true;                         // C0 controls
-    if (wc >= 0x7f && wc < 0xa0) return true;           // DEL + C1 controls
-    if (wc == 0x00ad) return true;                      // soft hyphen
-    if (wc == 0x070f || wc == 0x06dd || wc == 0x08e2) return true; // arabic format
-    if (wc == 0x200b || wc == 0x200c || wc == 0x200d) return true; // ZW space/joiners
-    if (wc >= 0x202a && wc <= 0x202e) return true;      // BiDi embeddings/overrides
-    if (wc >= 0x2066 && wc <= 0x2069) return true;      // BiDi isolates
-    if (wc == 0xfeff) return true;                      // BOM / ZWNBSP
-    return false;
+// All text enters curses through a sanitized, column-bounded writer.
+int TUI::utf8_display_width(const std::string& text) {
+    return ytcui::txt::terminal_width(text, TermCaps::get().unicode);
 }
-
-int TUI::utf8_display_width(const std::string& s) {
-    bool uni = TermCaps::get().unicode;
-    int w = 0;
-    const char* p = s.c_str();
-    const char* end = p + s.size();
-    mbstate_t mbs{};
-    while (p < end) {
-        wchar_t wc;
-        size_t n = mbrtowc(&wc, p, end - p, &mbs);
-        if (n == (size_t)-1 || n == (size_t)-2) { p++; continue; }
-        if (n == 0) break;
-        if (wc_problematic(wc) || (!uni && (unsigned long)wc >= 0x80)) { p += n; continue; }
-        int cw = wcwidth(wc);
-        w += (cw > 0) ? cw : 0;
-        p += n;
-    }
-    return w;
+std::string TUI::utf8_truncate(const std::string& text, int cols) {
+    return ytcui::txt::terminal_clip(text, cols, TermCaps::get().unicode);
 }
-
-// Truncate s to display width <= max_cols (appending "..." if cut) AND strip
-// problematic code points, so every string drawn is layout-safe.
-std::string TUI::utf8_truncate(const std::string& s, int max_cols) {
-    if (max_cols <= 0) return "";
-    bool fits = utf8_display_width(s) <= max_cols;
-    if (max_cols <= 3 && !fits) return std::string(max_cols, '.');
-
-    int target = fits ? max_cols : max_cols - 3;
-    bool uni = TermCaps::get().unicode;
-    std::string result;
-    int cols = 0;
-    const char* p = s.c_str();
-    const char* end = p + s.size();
-    mbstate_t mbs{};
-    while (p < end) {
-        wchar_t wc;
-        size_t n = mbrtowc(&wc, p, end - p, &mbs);
-        if (n == (size_t)-1 || n == (size_t)-2) { p++; continue; }
-        if (n == 0) break;
-        // Drop layout-breakers, and in non-UTF-8 locales drop anything outside
-        // printable ASCII: emitting those bytes is what turns the whole UI into
-        // garbage on terminals like bobcat or a Latin-1 mlterm.
-        if (wc_problematic(wc) || (!uni && (unsigned long)wc >= 0x80)) { p += n; continue; }
-        int cw = wcwidth(wc); if (cw < 0) cw = 0;
-        if (cols + cw > target) break;
-        result.append(p, n);
-        cols += cw;
-        p += n;
-    }
-    if (!fits) result += "...";
-    return result;
+int TUI::put_at(int y, int x, const char* text) {
+    if (!stdscr || !text) return ERR;
+    int h, w; getmaxyx(stdscr, h, w);
+    if (y < 0 || x < 0 || y >= h || x >= w) return ERR;
+    int ascii = 0;
+    while (ascii < w-x && text[ascii] && static_cast<unsigned char>(text[ascii]) >= 32 && static_cast<unsigned char>(text[ascii]) < 127) ++ascii;
+    if (ascii == w-x || text[ascii] == 0) return mvwaddnstr(stdscr,y,x,text,ascii);
+    auto clipped = ytcui::txt::terminal_clip(text, w-x, TermCaps::get().unicode, false);
+    return mvwaddnstr(stdscr, y, x, clipped.c_str(), static_cast<int>(clipped.size()));
 }
-
-// Advance through s by up to max_display_cols columns, return remainder.
-// Used for word-wrapping without chopping multibyte sequences.
-
-
+int TUI::print_at(int y, int x, const char* format, ...) {
+    char text[16384];
+    va_list args; va_start(args, format);
+    vsnprintf(text, sizeof text, format, args); va_end(args);
+    return put_at(y, x, text);
+}
+int TUI::print_here(const char* format, ...) {
+    int y, x; getyx(stdscr, y, x);
+    char text[16384];
+    va_list args; va_start(args, format);
+    vsnprintf(text, sizeof text, format, args); va_end(args);
+    return put_at(y, x, text);
+}
 
 // ─── TUI lifecycle ────────────────────────────────────────────────────────────
 TUI::TUI() {}
@@ -127,7 +76,14 @@ TUI::~TUI() { shutdown(); }
 
 bool TUI::init() {
     if (initialized_) return true;
-    initscr();
+    if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) return false;
+    have_termios_ = tcgetattr(STDIN_FILENO, &original_termios_) == 0;
+    screen_ = newterm(nullptr, stdout, stdin);
+    if (!screen_) {
+        if (have_termios_) tcsetattr(STDIN_FILENO,TCSANOW,&original_termios_);
+        return false;
+    }
+    set_term(screen_);
     // Belt-and-braces: discard anything ncurses' first read would otherwise
     // pick up as a keypress. TermCaps::detect() (and, rarely, an extra
     // sixel/cell-size probe) briefly put the tty in raw mode before we get
@@ -136,9 +92,10 @@ bool TUI::init() {
     // between "that probe finished" and "initscr() started reading" — the
     // window where a very slow terminal reply could still land and get
     // delivered as garbage text (e.g. straight into the search box).
-    flushinp();
+    // Do not discard real keys typed while the terminal was being detected.
     cbreak(); noecho(); keypad(stdscr, TRUE); curs_set(0);
-    nodelay(stdscr, FALSE); timeout(33); set_escdelay(25);
+    nodelay(stdscr, FALSE); timeout(33);
+    if (!getenv("ESCDELAY")) set_escdelay(100);
 
     // Disable software flow control (IXON/IXOFF). Without this, Ctrl-S is
     // eaten by the terminal as XOFF (freezing output) and Ctrl-Q as XON,
@@ -153,7 +110,6 @@ bool TUI::init() {
     }
 
     // Now that terminfo is live, pull authoritative colour/flag facts.
-    TermCaps::refine_from_ncurses();
     const TermCaps& caps = TermCaps::get();
 
     // Mouse: only enable when the terminal supports SGR mouse reporting. On
@@ -174,7 +130,8 @@ bool TUI::init() {
 
     if (has_colors()) {
         start_color();
-        use_default_colors();
+        default_bg_ = use_default_colors() == OK ? -1 : COLOR_BLACK;
+        TermCaps::refine_from_ncurses();
         init_thumb_colors();
     }
     // Selection bar uses a real colour pair when we have >= 8 colours; otherwise
@@ -190,48 +147,36 @@ bool TUI::init() {
     return true;
 }
 
+void TUI::clear_graphics() {
+    if (kitty_drawn_) {
+        static const char erase[] = "\033_Ga=d,d=A\033\\";
+        (void)::write(STDOUT_FILENO, erase, sizeof erase - 1);
+        kitty_drawn_ = false;
+    }
+    pending_gfx_.clear();
+}
 void TUI::shutdown() {
-    if (initialized_) { endwin(); initialized_ = false; }
+    if (initialized_) {
+        clear_graphics();
+        mousemask(0, nullptr);
+        endwin();
+        if (screen_) { delscreen(screen_); screen_ = nullptr; }
+        if (have_termios_) tcsetattr(STDIN_FILENO, TCSANOW, &original_termios_);
+        initialized_ = false;
+    }
 }
 
-// ── EP1: initialise one ncurses color pair per 256-colour index ───────────────
-// Pairs 17-272: pair(THUMB_COLOR_BASE + N) → fg=N, bg=terminal-default.
-// We check COLOR_PAIRS at runtime — if the terminal can't support 273 pairs
-// we skip and draw_thumb() falls back to monochrome automatically.
-// ── initialise thumbnail colour pairs, safely on any ncurses ──────────────────
-// We want one pair per 256-colour index (pairs 17..272). Two hazards:
-//   1. COLORS < 256 (8/16-colour terminal)            -> monochrome.
-//   2. ncurses < 6.1 (e.g. Apple's system ncurses 5.7) reports a large
-//      COLOR_PAIRS from terminfo but the colour-pair number only occupies the
-//      8-bit A_COLOR field, so any pair > 255 aliases onto a low pair and, on
-//      5.7, init_pair() for those high pairs is unsafe. Extended colour pairs
-//      (>256) require ncurses 6.1+.
-// So: cap the highest usable pair at 255 unless we positively detect ncurses
-// >= 6.1, and allocate as many thumb pairs as actually fit. draw_thumb() maps
-// each 0..255 colour index into the available palette, so fewer pairs just
-// means a coarser (still correct) thumbnail instead of heap corruption.
-static bool ncurses_has_ext_colors() {
-#if defined(NCURSES_VERSION_MAJOR)
-    // Compile-time floor; refine at runtime below.
-    if (NCURSES_VERSION_MAJOR < 6) return false;
-#endif
-    const char* v = curses_version();              // e.g. "ncurses 6.4.20230114"
-    if (!v) return false;
-    int major = 0, minor = 0;
-    // Skip to first digit, then parse "major.minor".
-    while (*v && (*v < '0' || *v > '9')) v++;
-    if (sscanf(v, "%d.%d", &major, &minor) < 1) return false;
-    return (major > 6) || (major == 6 && minor >= 1);
-}
-
+// Thumbnail pairs occupy 19..255 (or fewer when terminfo/A_COLOR has fewer bits).
+// COLOR_PAIR(chtype) cannot represent extended pair numbers on ncurses 6.x either.
+// Map all 256 input colors across the available legacy slots; reserve UI/QR pairs.
 void TUI::init_thumb_colors() {
     thumb_color_ready_ = false;
     thumb_pairs_ = 0;
     if (COLORS < 256) return;                       // hazard 1 -> monochrome
 
     int top = COLOR_PAIRS - 1;                      // highest pair index per terminfo
-    if (!ncurses_has_ext_colors())
-        top = (top < 255) ? top : 255;             // hazard 2: clamp to 8-bit field
+    // COLOR_PAIR(chtype) carries only legacy pair bits even on ncurses 6.x.
+    top = std::min(top, std::min(255, static_cast<int>(PAIR_NUMBER(A_COLOR))));             // hazard 2: clamp to 8-bit field
 
     if (top < THUMB_COLOR_BASE) return;             // no room for any thumb pair
     int n = top - THUMB_COLOR_BASE + 1;
@@ -242,7 +187,7 @@ void TUI::init_thumb_colors() {
         // Even-spaced representative colour for this slot (identity when n==256).
         int color = (n == 256) ? s : (s * 256 / n);
         if (color > 255) color = 255;
-        init_pair(short(THUMB_COLOR_BASE + s), short(color), -1);
+        if (init_pair(short(THUMB_COLOR_BASE + s), short(color), default_bg_) == ERR) return;
     }
     thumb_pairs_ = n;
     thumb_color_ready_ = (n > 0);
@@ -271,7 +216,7 @@ void TUI::draw_thumb(const std::string& video_id,
             int row = 0;
             for (auto& line : td) {
                 if (y + row >= bot || row >= rows) break;
-                move(y + row, x);
+                int drawn_cols = 0;
                 for (auto& cell : line) {
                     int pair = Color::BG;
                     if (cell.color_idx >= 0 && cell.color_idx < 256 && thumb_pairs_ > 0) {
@@ -284,7 +229,10 @@ void TUI::draw_thumb(const std::string& video_id,
                         pair = THUMB_COLOR_BASE + slot;
                     }
                     attron(COLOR_PAIR(pair));
-                    addstr(cell.glyph.c_str());
+                    const int width = utf8_display_width(cell.glyph);
+                    if (drawn_cols + width > cols) { attroff(COLOR_PAIR(pair)); break; }
+                    put_at(y + row, x + drawn_cols, cell.glyph.c_str());
+                    drawn_cols += width;
                     attroff(COLOR_PAIR(pair));
                 }
                 row++;
@@ -302,8 +250,7 @@ void TUI::draw_thumb(const std::string& video_id,
     int tl = 0;
     while (std::getline(ss, ln) && y + tl < bot && tl < rows) {
         if (!ln.empty() && ln.back() == '\r') ln.pop_back();
-        move(y + tl, x);
-        addstr(ln.c_str());
+        put_at(y + tl, x, ytcui::txt::terminal_clip(ln, cols, TermCaps::get().unicode, false).c_str());
         tl++;
     }
 }
@@ -324,7 +271,28 @@ static short selbar_fg(short bg) {
     return lum >= 8 ? COLOR_BLACK : COLOR_WHITE;
 }
 
+static short palette_color(int value, int count, short fallback) {
+    if (value < 0) return fallback;
+    if (value < count) return static_cast<short>(value);
+    if (count <= 0) return 0;
+    if (value < 16) return static_cast<short>(value % std::min(8, count));
+    int red, green, blue;
+    if (value >= 232) red = green = blue = 8 + (std::min(value,255)-232)*10;
+    else {
+        const int cube[] = {0,95,135,175,215,255};
+        int v = std::clamp(value-16, 0, 215);
+        red = cube[v/36]; green = cube[(v/6)%6]; blue = cube[v%6];
+    }
+    int basic = (red >= 128 ? 1 : 0) | (green >= 128 ? 2 : 0) | (blue >= 128 ? 4 : 0);
+    return static_cast<short>(basic % count);
+}
+
 void TUI::setup_colors(const AppState& state) {
+    qr_colors_ = false;
+    if (!has_colors() || COLORS <= 0) { sel_use_color_ = false; return; }
+    auto pair = [&](short id, int fg) {
+        if (id < COLOR_PAIRS) init_pair(id, palette_color(fg, COLORS, default_bg_ < 0 ? -1 : COLOR_WHITE), default_bg_);
+    };
     // resolved_colors is pre-computed by App: base theme + custom overrides.
     // In strict-monochrome mode (MLterm theme OR a detected/forced mlterm) every
     // element must be the terminal default — otherwise an auto-detected mlterm
@@ -335,29 +303,31 @@ void TUI::setup_colors(const AppState& state) {
     const ThemeColors& tc = mono_mode_ ? get_theme_colors(Theme::MLterm)
                                        : state.resolved_colors;
 
-    init_pair(Color::BG,         tc.bg,         -1);
-    init_pair(Color::SEARCH_BOX, tc.search_box, -1);
-    init_pair(Color::TITLE,      tc.title,      -1);
-    init_pair(Color::CHANNEL,    tc.channel,    -1);
-    init_pair(Color::STATS,      tc.stats,      -1);
-    init_pair(Color::SELECTED,   tc.selected,   -1);
-    init_pair(Color::ACTION,     tc.action,     -1);
-    init_pair(Color::ACTION_SEL, tc.action_sel, -1);
-    init_pair(Color::STATUS,     tc.status,     -1);
-    init_pair(Color::BORDER,     tc.border,     -1);
-    init_pair(Color::HEADER,     tc.header,     -1);
-    init_pair(Color::ACCENT,     tc.accent,     -1);
-    init_pair(Color::TAG,        tc.tag,        -1);
-    init_pair(Color::PUBLISHED,  tc.published,  -1);
-    init_pair(Color::BOOKMARK,   tc.bookmark,   -1);
-    init_pair(Color::DESC,       tc.desc,       -1);
+    pair(Color::BG, tc.bg);
+    pair(Color::SEARCH_BOX, tc.search_box);
+    pair(Color::TITLE, tc.title);
+    pair(Color::CHANNEL, tc.channel);
+    pair(Color::STATS, tc.stats);
+    pair(Color::SELECTED, tc.selected);
+    pair(Color::ACTION, tc.action);
+    pair(Color::ACTION_SEL, tc.action_sel);
+    pair(Color::STATUS, tc.status);
+    pair(Color::BORDER, tc.border);
+    pair(Color::HEADER, tc.header);
+    pair(Color::ACCENT, tc.accent);
+    pair(Color::TAG, tc.tag);
+    pair(Color::PUBLISHED, tc.published);
+    pair(Color::BOOKMARK, tc.bookmark);
+    pair(Color::DESC, tc.desc);
 
     // Selection bar: solid fg-on-bg so the highlight is a real, full-width bar
     // that does NOT depend on reverse-video or back-colour-erase behaving the
     // same across terminals (it doesn't: Linux console, PuTTY, gnome-terminal
     // erase with the default bg, so clrtoeol/bkgd can't be trusted to paint it).
     short bar_bg = tc.selected >= 0 ? tc.selected : tc.accent;
-    init_pair(Color::SELECTED_BAR, selbar_fg(bar_bg), bar_bg);
+    bar_bg = palette_color(bar_bg, COLORS, COLOR_BLACK);
+    if (Color::SELECTED_BAR < COLOR_PAIRS) init_pair(Color::SELECTED_BAR, selbar_fg(bar_bg), bar_bg);
+    qr_colors_ = Color::QR < COLOR_PAIRS && init_pair(Color::QR, COLOR_BLACK, COLOR_WHITE) == OK;
 
     // Strict-monochrome mode: never use a coloured selection bar. sel_attr()
     // falls back to plain A_REVERSE — the universal, colour-free "this row is
@@ -372,7 +342,9 @@ void TUI::get_dimensions(int& w, int& h) { getmaxyx(stdscr, h, w); }
 // every terminal because it does not depend on back-colour-erase or clrtoeol
 // honouring the background attribute. Caller then draws text with sel_attr().
 void TUI::paint_sel_bar(int y, int x, int w) {
-    if (w <= 0) return;
+    int rows, cols; getmaxyx(stdscr, rows, cols);
+    if (w <= 0 || y < 0 || y >= rows || x < 0 || x >= cols) return;
+    w = std::min(w, cols-x);
     chtype a = sel_attr();
     attron(a);
     for (int i = 0; i < w; i++) mvaddch(y, x + i, ' ');
@@ -381,6 +353,7 @@ void TUI::paint_sel_bar(int y, int x, int w) {
 
 // ─── Top-level render ─────────────────────────────────────────────────────────
 void TUI::render(const AppState& state, const Library* lib) {
+    if (!initialized_) return;
     // Strict-monochrome mode is in effect when the user picked the MLterm theme
     // OR the terminal was detected/forced as mlterm. Both converge here so the
     // hardening is identical either way.
@@ -395,7 +368,9 @@ void TUI::render(const AppState& state, const Library* lib) {
     // block art (its bytes are exactly what garbles a no-imagelib mlterm). The
     // app layer already forces gfx off when hardened; this is the render-side
     // guarantee that no image path runs regardless of state.gfx_mode.
-    gfx_mode_ = mono_mode_ ? (int)Thumbnails::Gfx::None : state.gfx_mode;
+    const int requested_gfx = mono_mode_ ? (int)Thumbnails::Gfx::None : state.gfx_mode;
+    if (requested_gfx != gfx_mode_) clear_graphics();
+    gfx_mode_ = requested_gfx;
 
     // Diagnostic: log only when the mono state flips, so a --debug log makes it
     // obvious WHY a terminal is (or isn't) black & white — detection vs theme vs
@@ -418,21 +393,19 @@ void TUI::render(const AppState& state, const Library* lib) {
     }
     pending_gfx_.clear();
     setup_colors(state);
+    attrset(A_NORMAL);
     erase();
+    if (state.term_w < 16 || state.term_h < (state.ui_mode == 1 ? 6 : 12)) {
+        clear_graphics();
+        print_at(0, 0, "Resize terminal");
+        if (state.show_share && state.term_w>=16 && state.term_h>=6) draw_share_menu(state);
+        refresh(); return;
+    }
 
     // Narrow terminal: hand off to the minimalist music-player layout.
     if (state.ui_mode == 1) {
         render_streamlined(state, lib);
-        // Popups must render on top in streamlined mode too — previously this
-        // returned early and skipped them, so shortcuts (?) and settings
-        // (Ctrl-S) were invisible in narrow terminals. (The progress bar is
-        // drawn inside the streamlined Playing screen itself.)
-        if (state.show_shortcuts) draw_shortcuts(state);
-        if (state.show_settings)  draw_settings(state);
-        if (state.show_timer_prompt || state.focus == Panel::TimerPrompt) draw_timer_prompt(state);
-        if (state.show_queue || state.focus == Panel::QueueView)          draw_queue_view(state);
-        if (state.show_share  || state.focus == Panel::ShareMenu)         draw_share_menu(state);
-        if (state.show_res_menu   || state.focus == Panel::ResMenu)       draw_res_menu(state);
+        draw_overlays(state);
         refresh();
         flush_graphics();
         return;
@@ -464,17 +437,7 @@ void TUI::render(const AppState& state, const Library* lib) {
 
     if (state.show_status_bar) draw_message_bar(state);
 
-    if (state.focus == Panel::BrowserPick)  draw_browser_popup(state);
-    if (state.focus == Panel::SortMenu)     draw_sort_menu(state);
-    if (state.focus == Panel::SavePrompt)   draw_save_prompt(state);
-    if (state.focus == Panel::PlaylistPick) draw_playlist_picker(state);
-    if (state.focus == Panel::NewPlaylist)  draw_new_playlist_prompt(state);
-    if (state.show_shortcuts)              draw_shortcuts(state);
-    if (state.show_settings)               draw_settings(state);
-    if (state.show_timer_prompt || state.focus == Panel::TimerPrompt) draw_timer_prompt(state);
-    if (state.show_queue || state.focus == Panel::QueueView)          draw_queue_view(state);
-    if (state.show_share  || state.focus == Panel::ShareMenu)         draw_share_menu(state);
-    if (state.show_res_menu   || state.focus == Panel::ResMenu)       draw_res_menu(state);
+    draw_overlays(state);
     refresh();
     flush_graphics();   // emit raster thumbnails (Sixel/Kitty/iTerm) post-refresh
 }
@@ -487,6 +450,24 @@ void TUI::render(const AppState& state, const Library* lib) {
 //   * Kitty images are separate placements that text repaint does NOT erase, so
 //     we explicitly delete all images each frame before drawing the new set
 //     (and also when a frame has no thumbnails, to clear a stale one).
+void TUI::draw_overlays(const AppState& state) {
+    if (state.focus == Panel::BrowserPick)  draw_browser_popup(state);
+    if (state.focus == Panel::SortMenu)     draw_sort_menu(state);
+    if (state.focus == Panel::SavePrompt)   draw_save_prompt(state);
+    if (state.focus == Panel::PlaylistPick) draw_playlist_picker(state);
+    if (state.focus == Panel::NewPlaylist)  draw_new_playlist_prompt(state);
+    if (state.show_shortcuts)              draw_shortcuts(state);
+    if (state.show_settings)               draw_settings(state);
+    if (state.show_timer_prompt || state.focus == Panel::TimerPrompt) draw_timer_prompt(state);
+    if (state.show_queue || state.focus == Panel::QueueView)          draw_queue_view(state);
+    if (state.show_share  || state.focus == Panel::ShareMenu)         draw_share_menu(state);
+    if (state.show_res_menu   || state.focus == Panel::ResMenu)       draw_res_menu(state);
+    if (state.show_share || state.show_queue || state.show_settings || state.show_shortcuts ||
+        state.show_timer_prompt || state.show_res_menu || state.focus == Panel::BrowserPick ||
+        state.focus == Panel::SavePrompt || state.focus == Panel::SortMenu ||
+        state.focus == Panel::PlaylistPick || state.focus == Panel::NewPlaylist) clear_graphics();
+}
+
 void TUI::flush_graphics() {
     Thumbnails::Gfx g = (Thumbnails::Gfx)gfx_mode_;
     bool have_kitty_clear = (g == Thumbnails::Gfx::Kitty && kitty_drawn_);
@@ -560,7 +541,7 @@ void TUI::draw_search_box(const AppState& state) {
     int dw = utf8_display_width(d);
 
     attron(COLOR_PAIR(Color::SEARCH_BOX));
-    mvprintw(y + 1, 1, "%s", d.c_str());
+    print_at(y + 1, 1, "%s", d.c_str());
     for (int i = dw; i < iw; i++) addch(' ');
     attroff(COLOR_PAIR(Color::SEARCH_BOX));
 
@@ -569,7 +550,7 @@ void TUI::draw_search_box(const AppState& state) {
     // Hamburger button [ ☰ ] — lights up when sort menu is open
     draw_box(y, sb_w, 3, HB_W, hsf ? Color::ACCENT : Color::BORDER);
     attron(COLOR_PAIR(hsf ? Color::ACCENT : Color::STATS) | A_BOLD);
-    mvprintw(y + 1, sb_w + 1, "...");  // ☰ UTF-8: E2 98 B0
+    print_at(y + 1, sb_w + 1, "...");  // ☰ UTF-8: E2 98 B0
     attroff(COLOR_PAIR(hsf ? Color::ACCENT : Color::STATS) | A_BOLD);
 }
 
@@ -609,7 +590,7 @@ void TUI::draw_tabs(const AppState& state) {
         if (act) attron(COLOR_PAIR(Color::STATS) | A_BOLD);
         else if (is_results_tab) attron(COLOR_PAIR(Color::ACCENT));
         else attron(COLOR_PAIR(Color::BG));
-        mvprintw(y + 1, lx, "%s", lbl.c_str());
+        print_at(y + 1, lx, "%s", lbl.c_str());
         if (act) attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
         else if (is_results_tab) attroff(COLOR_PAIR(Color::ACCENT));
         else attroff(COLOR_PAIR(Color::BG));
@@ -639,40 +620,40 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
 
         if (sy + 1 < ey) {
             attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-            mvprintw(sy + 1, 2, "%s", utf8_truncate("Subscriptions", lw - 4).c_str());
+            print_at(sy + 1, 2, "%s", utf8_truncate("Subscriptions", lw - 4).c_str());
             attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
         }
 
         auto subs = lib->subscriptions();
         if (subs.empty()) {
-            if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); mvprintw(sy + 3, 3, "%s", utf8_truncate("No subscriptions yet (._.)  ", lw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
-            if (sy + 4 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); mvprintw(sy + 4, 3, "%s", utf8_truncate("Subscribe from action menu!", lw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
+            if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); print_at(sy + 3, 3, "%s", utf8_truncate("No subscriptions yet (._.)  ", lw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
+            if (sy + 4 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); print_at(sy + 4, 3, "%s", utf8_truncate("Subscribe from action menu!", lw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
         } else {
             for (int i = 0; i < (int)subs.size() && i < max_items; i++) {
                 int row = sy + 2 + i;
                 if (row >= ey) break;
                 attron(COLOR_PAIR(Color::CHANNEL));
-                mvprintw(row, 3, "%s", utf8_truncate(subs[i].title, lw - 5).c_str());
+                print_at(row, 3, "%s", utf8_truncate(subs[i].title, lw - 5).c_str());
                 attroff(COLOR_PAIR(Color::CHANNEL));
             }
         }
 
         if (sy + 1 < ey) {
             attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-            mvprintw(sy + 1, lw + 2, "%s", utf8_truncate("Saved Videos", rw - 4).c_str());
+            print_at(sy + 1, lw + 2, "%s", utf8_truncate("Saved Videos", rw - 4).c_str());
             attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
         }
 
         auto vids = lib->saved_videos();
         if (vids.empty()) {
-            if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); mvprintw(sy + 3, lw + 3, "%s", utf8_truncate("No saved videos yet :3", rw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
-            if (sy + 4 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); mvprintw(sy + 4, lw + 3, "%s", utf8_truncate("Bookmark from action menu!", rw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
+            if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); print_at(sy + 3, lw + 3, "%s", utf8_truncate("No saved videos yet :3", rw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
+            if (sy + 4 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); print_at(sy + 4, lw + 3, "%s", utf8_truncate("Bookmark from action menu!", rw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
         } else {
             for (int i = 0; i < (int)vids.size() && i < max_items; i++) {
                 int row = sy + 2 + i;
                 if (row >= ey) break;
                 attron(COLOR_PAIR(Color::TITLE));
-                mvprintw(row, lw + 3, "%s", utf8_truncate(vids[i].title, rw - 5).c_str());
+                print_at(row, lw + 3, "%s", utf8_truncate(vids[i].title, rw - 5).c_str());
                 attroff(COLOR_PAIR(Color::TITLE));
             }
         }
@@ -683,14 +664,14 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
 
         if (sy + 1 < ey) {
             attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-            mvprintw(sy + 1, 2, "%s", utf8_truncate("Watch History", state.term_w - 4).c_str());
+            print_at(sy + 1, 2, "%s", utf8_truncate("Watch History", state.term_w - 4).c_str());
             attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
         }
 
         auto hist = lib->history();
         if (hist.empty()) {
-            if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); mvprintw(sy + 3, 3, "%s", utf8_truncate("Nothing watched yet ('v')", state.term_w - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
-            if (sy + 4 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); mvprintw(sy + 4, 3, "%s", utf8_truncate("Play something and it'll show up here!", state.term_w - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
+            if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); print_at(sy + 3, 3, "%s", utf8_truncate("Nothing watched yet ('v')", state.term_w - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
+            if (sy + 4 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); print_at(sy + 4, 3, "%s", utf8_truncate("Play something and it'll show up here!", state.term_w - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
         } else {
             int full_w = state.term_w - 4;
             int title_w = full_w * 60 / 100;
@@ -698,9 +679,9 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
 
             if (sy + 2 < ey) {
                 attron(COLOR_PAIR(Color::BG) | A_DIM);
-                mvprintw(sy + 2, 3, "%s", utf8_truncate("Title", title_w).c_str());
+                print_at(sy + 2, 3, "%s", utf8_truncate("Title", title_w).c_str());
                 if (chan_w > 0)
-                    mvprintw(sy + 2, 3 + title_w + 2, "%s", utf8_truncate("Channel", chan_w).c_str());
+                    print_at(sy + 2, 3 + title_w + 2, "%s", utf8_truncate("Channel", chan_w).c_str());
                 attroff(COLOR_PAIR(Color::BG) | A_DIM);
             }
 
@@ -713,17 +694,17 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
                 if (sel) {
                     paint_sel_bar(row, 2, full_w + 1);
                     attron(sel_attr() | A_BOLD);
-                    mvprintw(row, 2, " %-*s", title_w - 1, utf8_truncate(hist[idx].title, title_w - 2).c_str());
+                    print_at(row, 2, " %-*s", title_w - 1, utf8_truncate(hist[idx].title, title_w - 2).c_str());
                     if (chan_w > 0)
-                        printw("  %-*s ", chan_w - 2, utf8_truncate(hist[idx].channel, chan_w - 3).c_str());
+                        print_here("  %-*s ", chan_w - 2, utf8_truncate(hist[idx].channel, chan_w - 3).c_str());
                     attroff(sel_attr() | A_BOLD);
                 } else {
                     attron(COLOR_PAIR(Color::TITLE));
-                    mvprintw(row, 3, "%s", utf8_truncate(hist[idx].title, title_w).c_str());
+                    print_at(row, 3, "%s", utf8_truncate(hist[idx].title, title_w).c_str());
                     attroff(COLOR_PAIR(Color::TITLE));
                     if (chan_w > 0 && !hist[idx].channel.empty()) {
                         attron(COLOR_PAIR(Color::CHANNEL) | A_DIM);
-                        mvprintw(row, 3 + title_w + 2, "%s", utf8_truncate(hist[idx].channel, chan_w).c_str());
+                        print_at(row, 3 + title_w + 2, "%s", utf8_truncate(hist[idx].channel, chan_w).c_str());
                         attroff(COLOR_PAIR(Color::CHANNEL) | A_DIM);
                     }
                 }
@@ -731,7 +712,7 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
             // Hint
             if (state.show_hints && ey - 1 > sy + 2) {
                 attron(COLOR_PAIR(Color::BG) | A_DIM);
-                mvprintw(ey - 1, 2, "j/k=navigate  Enter/click=search & go to results");
+                print_at(ey - 1, 2, "j/k=navigate  Enter/click=search & go to results");
                 attroff(COLOR_PAIR(Color::BG) | A_DIM);
             }
         }
@@ -750,7 +731,7 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
                 int ax = std::max(0, (state.term_w - 16) / 2);
                 if (ax + 16 <= state.term_w) {
                     attron(COLOR_PAIR(Color::BG) | A_DIM);
-                    mvprintw(cy + i, ax, "%s", art[i]);
+                    print_at(cy + i, ax, "%s", art[i]);
                     attroff(COLOR_PAIR(Color::BG) | A_DIM);
                 }
             }
@@ -760,12 +741,12 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
 
             if (sy + 1 < ey) {
                 attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-                mvprintw(sy + 1, 2, "%s", utf8_truncate("Recently Played", lw - 4).c_str());
+                print_at(sy + 1, 2, "%s", utf8_truncate("Recently Played", lw - 4).c_str());
                 attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
             }
 
             if (hist.empty()) {
-                if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); mvprintw(sy + 3, 3, "%s", utf8_truncate("Nothing played yet ('v')", lw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
+                if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); print_at(sy + 3, 3, "%s", utf8_truncate("Nothing played yet ('v')", lw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
             } else {
                 int count = std::min((int)hist.size(), max_items / 2);
                 for (int i = 0; i < count; i++) {
@@ -775,17 +756,17 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
                     bool sel = (i == state.home_selected_idx) && (state.focus == Panel::Tabs);
                     if (sel) {
                         attron(sel_attr());
-                        mvprintw(row,     2, " %-*s ", lw - 5, utf8_truncate(hist[idx].title, lw - 7).c_str());
+                        print_at(row,     2, " %-*s ", lw - 5, utf8_truncate(hist[idx].title, lw - 7).c_str());
                         if (!hist[idx].channel.empty() && row + 1 < ey)
-                            mvprintw(row + 1, 2, " %-*s ", lw - 5, utf8_truncate("  " + hist[idx].channel, lw - 7).c_str());
+                            print_at(row + 1, 2, " %-*s ", lw - 5, utf8_truncate("  " + hist[idx].channel, lw - 7).c_str());
                         attroff(sel_attr());
                     } else {
                         attron(COLOR_PAIR(Color::TITLE));
-                        mvprintw(row, 3, "%s", utf8_truncate(hist[idx].title, lw - 5).c_str());
+                        print_at(row, 3, "%s", utf8_truncate(hist[idx].title, lw - 5).c_str());
                         attroff(COLOR_PAIR(Color::TITLE));
                         if (!hist[idx].channel.empty() && row + 1 < ey) {
                             attron(COLOR_PAIR(Color::CHANNEL) | A_DIM);
-                            mvprintw(row + 1, 5, "%s", utf8_truncate(hist[idx].channel, lw - 7).c_str());
+                            print_at(row + 1, 5, "%s", utf8_truncate(hist[idx].channel, lw - 7).c_str());
                             attroff(COLOR_PAIR(Color::CHANNEL) | A_DIM);
                         }
                     }
@@ -794,18 +775,18 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
 
             if (sy + 1 < ey) {
                 attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-                mvprintw(sy + 1, lw + 2, "%s", utf8_truncate("Subscribed Channels", rw - 4).c_str());
+                print_at(sy + 1, lw + 2, "%s", utf8_truncate("Subscribed Channels", rw - 4).c_str());
                 attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
             }
 
             if (subs.empty()) {
-                if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); mvprintw(sy + 3, lw + 3, "%s", utf8_truncate("No subscriptions yet", rw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
+                if (sy + 3 < ey) { attron(COLOR_PAIR(Color::BG) | A_DIM); print_at(sy + 3, lw + 3, "%s", utf8_truncate("No subscriptions yet", rw - 6).c_str()); attroff(COLOR_PAIR(Color::BG) | A_DIM); }
             } else {
                 for (int i = 0; i < (int)subs.size() && i < max_items; i++) {
                     int row = sy + 2 + i;
                     if (row >= ey) break;
                     attron(COLOR_PAIR(Color::CHANNEL));
-                    mvprintw(row, lw + 3, "%s", utf8_truncate(subs[i].title, rw - 5).c_str());
+                    print_at(row, lw + 3, "%s", utf8_truncate(subs[i].title, rw - 5).c_str());
                     attroff(COLOR_PAIR(Color::CHANNEL));
                 }
             }
@@ -820,7 +801,7 @@ void TUI::draw_home_panels(const AppState& state, const Library* lib) {
             info = utf8_truncate(info, state.term_w - 4);
             int ix = std::max(0, (state.term_w - utf8_display_width(info)) / 2);
             attron(COLOR_PAIR(Color::STATS) | A_DIM);
-            mvprintw(iy, ix, "%s", info.c_str());
+            print_at(iy, ix, "%s", info.c_str());
             attroff(COLOR_PAIR(Color::STATS) | A_DIM);
         }
     }
@@ -845,8 +826,9 @@ void TUI::draw_results_panel(const AppState& state) {
 
     auto col = ytcui::layout::results_columns(iw);
 
-    for (int i = 0; i < mv && (i + state.results_scroll) < (int)state.results.size(); i++) {
-        int idx = i + state.results_scroll;
+    const int results_scroll = std::clamp(state.results_scroll, 0, std::max(0, static_cast<int>(state.results.size())-mv));
+    for (int i = 0; i < mv && (i + results_scroll) < (int)state.results.size(); i++) {
+        int idx = i + results_scroll;
         int y   = iy + i;
         if (y >= ey) break;
 
@@ -875,14 +857,14 @@ void TUI::draw_results_panel(const AppState& state) {
 
         if (sel) {
             attron(sel_attr());
-            mvprintw(y, 1, "%s", utf8_truncate(row, iw).c_str());
+            print_at(y, 1, "%s", utf8_truncate(row, iw).c_str());
             // Fill remaining width
             int rw2 = utf8_display_width(utf8_truncate(row, iw));
             for (int j = rw2; j < iw; j++) addch(' ');
             attroff(sel_attr());
         } else {
             attron(COLOR_PAIR(Color::BG));
-            mvprintw(y, 1, "%s", utf8_truncate(row, iw).c_str());
+            print_at(y, 1, "%s", utf8_truncate(row, iw).c_str());
             attroff(COLOR_PAIR(Color::BG));
         }
     }
@@ -920,12 +902,12 @@ void TUI::draw_actions_panel(const AppState& state) {
 
         if (sel && f) {
             attron(sel_attr());
-            mvprintw(y, lw + 1, " %s", label.c_str());
+            print_at(y, lw + 1, " %s", label.c_str());
             for (int j = lw2 + 1; j < iw; j++) addch(' ');
             attroff(sel_attr());
         } else {
             attron(COLOR_PAIR(Color::BG));
-            mvprintw(y, lw + 2, "%s", label.c_str());
+            print_at(y, lw + 2, "%s", label.c_str());
             attroff(COLOR_PAIR(Color::BG));
         }
     }
@@ -933,7 +915,7 @@ void TUI::draw_actions_panel(const AppState& state) {
 
 // ─── Info panel (details + thumbnail) ────────────────────────────────────────
 void TUI::draw_info_panel(const AppState& state, int px, int py, int pw, int ph, bool with_thumb) {
-    if (state.results.empty() || state.selected_result >= (int)state.results.size()) return;
+    if (state.results.empty() || (state.selected_result < 0 || state.selected_result >= (int)state.results.size())) return;
     if (pw <= 4 || ph <= 2) return;
 
     const auto& v = state.results[state.selected_result];
@@ -945,7 +927,7 @@ void TUI::draw_info_panel(const AppState& state, int px, int py, int pw, int ph,
     int bot = py + ph - 1;
 
     // Thumbnail — rendered through ncurses as plain UTF-8 halfblock characters.
-    // chafa --colors=none emits zero ANSI escape sequences, so mvaddstr() handles
+    // chafa --colors=none emits zero ANSI escape sequences, so put_at() handles
     // it correctly. ncurses owns this region: erase() clears it, highlighting and
     // scrolling work normally. No ghosting, no persistence, no z-order bugs.
     if (with_thumb && state.thumbs_available && !v.id.empty() && w > 4) {
@@ -960,7 +942,7 @@ void TUI::draw_info_panel(const AppState& state, int px, int py, int pw, int ph,
         } else {
             if (y < bot) {
                 attron(COLOR_PAIR(Color::BG) | A_DIM);
-                mvaddstr(y, x, "[loading thumbnail...]");
+                put_at(y, x, "[loading thumbnail...]");
                 attroff(COLOR_PAIR(Color::BG) | A_DIM);
                 y++;
             }
@@ -971,7 +953,7 @@ void TUI::draw_info_panel(const AppState& state, int px, int py, int pw, int ph,
     auto line = [&](int cp, const std::string& text) {
         if (y >= bot || w <= 0) return;
         attron(COLOR_PAIR(cp));
-        mvprintw(y++, x, "%s", utf8_truncate(text, w).c_str());
+        print_at(y++, x, "%s", utf8_truncate(text, w).c_str());
         attroff(COLOR_PAIR(cp));
     };
 
@@ -980,14 +962,14 @@ void TUI::draw_info_panel(const AppState& state, int px, int py, int pw, int ph,
     // Title — word-wrap across multiple lines without chopping chars
     if (y < bot) {
         attron(COLOR_PAIR(Color::TITLE));
-        std::string rem = v.title;
+        std::string rem = ytcui::txt::terminal_sanitize(v.title, TermCaps::get().unicode);
         if (rem.size() > 500) rem.resize(500); // sanity cap
         int safety = 0;
         while (!rem.empty() && y < bot && safety++ < 20) {
             int rw_disp = utf8_display_width(rem);
             if (rw_disp <= w) {
                 // Entire remainder fits
-                mvprintw(y++, x, "%s", rem.c_str());
+                print_at(y++, x, "%s", rem.c_str());
                 break;
             }
             // Print one row's worth without the "..." — just wrap cleanly
@@ -1006,7 +988,7 @@ void TUI::draw_info_panel(const AppState& state, int px, int py, int pw, int ph,
                 rem = std::string(p, end);
             }
             if (chunk.empty()) break; // safety: prevent infinite loop
-            mvprintw(y++, x, "%s", chunk.c_str());
+            print_at(y++, x, "%s", chunk.c_str());
         }
         attroff(COLOR_PAIR(Color::TITLE));
     }
@@ -1050,10 +1032,10 @@ void TUI::draw_message_bar(const AppState& state) {
         if (title_max < 10) title_max = w - 2;
 
         attron(COLOR_PAIR(Color::BG));
-        mvprintw(y + 1, 1, "%s", utf8_truncate(title_line, title_max).c_str());
+        print_at(y + 1, 1, "%s", utf8_truncate(title_line, title_max).c_str());
 
         if (title_max < w - 2) {
-            mvprintw(y + 1, w - 1 - (int)strlen(vol_buf), "%s", vol_buf);
+            print_at(y + 1, w - 1 - (int)strlen(vol_buf), "%s", vol_buf);
         }
         attroff(COLOR_PAIR(Color::BG));
 
@@ -1075,18 +1057,18 @@ void TUI::draw_message_bar(const AppState& state) {
 
                 // Draw the bar
                 attron(COLOR_PAIR(Color::ACCENT));
-                mvaddch(y + 2, bar_start - 1, ACS_LRCORNER);
+                put_at(y + 2, bar_start - 1, bd_.bl);
                 for (int i = 0; i < bar_w; i++) {
                     if (i < filled)
-                        mvaddch(y + 2, bar_start + i, ACS_BLOCK);
+                        mvaddch(y + 2, bar_start + i, '#');
                     else
-                        mvaddch(y + 2, bar_start + i, ACS_HLINE);
+                        put_at(y + 2, bar_start + i, bd_.h);
                 }
                 attroff(COLOR_PAIR(Color::ACCENT));
 
                 // Time stamps
                 attron(COLOR_PAIR(Color::STATS));
-                mvprintw(y + 2, bar_end + 1, "%s", times.c_str());
+                print_at(y + 2, bar_end + 1, "%s", times.c_str());
                 attroff(COLOR_PAIR(Color::STATS));
             }
         }
@@ -1097,11 +1079,11 @@ void TUI::draw_message_bar(const AppState& state) {
         std::string timer_tag = state.timer_status.empty() ? "" : " \xe2\x8f\xb1 " + state.timer_status;
         int msg_max = w - 2 - (int)timer_tag.size();
         if (msg_max < 4) msg_max = w - 2;
-        mvprintw(y + 1, 1, "%s", utf8_truncate(state.status_message, msg_max).c_str());
+        print_at(y + 1, 1, "%s", utf8_truncate(state.status_message, msg_max).c_str());
         attroff(COLOR_PAIR(Color::BG));
         if (!timer_tag.empty() && msg_max < w - 2) {
             attron(COLOR_PAIR(Color::STATS) | A_DIM);
-            mvprintw(y + 1, w - 1 - (int)timer_tag.size(), "%s", timer_tag.c_str());
+            print_at(y + 1, w - 1 - (int)timer_tag.size(), "%s", timer_tag.c_str());
             attroff(COLOR_PAIR(Color::STATS) | A_DIM);
         }
     }
@@ -1109,7 +1091,7 @@ void TUI::draw_message_bar(const AppState& state) {
     if (!state.queue_items.empty()) {
         attron(COLOR_PAIR(Color::CHANNEL) | A_DIM);
         std::string qtag = " Q:" + std::to_string(state.queue_items.size()) + " ";
-        mvprintw(y + 2, 1, "%s", qtag.c_str());
+        print_at(y + 2, 1, "%s", qtag.c_str());
         attroff(COLOR_PAIR(Color::CHANNEL) | A_DIM);
     }
 }
@@ -1127,7 +1109,7 @@ void TUI::draw_sort_menu(const AppState& state) {
     int half = pw / 2;
     draw_box(py, px, ph, half, state.sort_col == 0 ? Color::ACCENT : Color::BORDER);
     attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
-    mvprintw(py + 1, px + 2, "Sort by");
+    print_at(py + 1, px + 2, "Sort by");
     attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
 
     const char* sorts[]   = {"Relevance", "Upload date", "View count", "Rating"};
@@ -1137,21 +1119,21 @@ void TUI::draw_sort_menu(const AppState& state) {
         bool sel = (state.sort_col == 0 && state.sort_row == i);
         if (sel) attron(sel_attr());
         else     attron(COLOR_PAIR(Color::BG));
-        mvprintw(py + 2 + i, px + 2, "%-*s", half - 4, utf8_truncate(sorts[i], half - 4).c_str());
+        print_at(py + 2 + i, px + 2, "%-*s", half - 4, utf8_truncate(sorts[i], half - 4).c_str());
         if (sel) attroff(sel_attr());
         else     attroff(COLOR_PAIR(Color::BG));
     }
 
     draw_box(py, px + half, ph, half, state.sort_col == 1 ? Color::ACCENT : Color::BORDER);
     attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
-    mvprintw(py + 1, px + half + 2, "Filter");
+    print_at(py + 1, px + half + 2, "Filter");
     attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
 
     for (int i = 0; i < 6 && i < ph - 3; i++) {
         bool sel = (state.sort_col == 1 && state.sort_row == i);
         if (sel) attron(sel_attr());
         else     attron(COLOR_PAIR(Color::BG));
-        mvprintw(py + 2 + i, px + half + 2, "%-*s", half - 4, utf8_truncate(filters[i], half - 4).c_str());
+        print_at(py + 2 + i, px + half + 2, "%-*s", half - 4, utf8_truncate(filters[i], half - 4).c_str());
         if (sel) attroff(sel_attr());
         else     attroff(COLOR_PAIR(Color::BG));
     }
@@ -1169,7 +1151,7 @@ void TUI::draw_save_prompt(const AppState& state) {
     draw_box(py, px, ph, pw, Color::STATS);
 
     attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-    mvprintw(py, px + std::max(0, (pw - 16) / 2), " Save to Library ");
+    print_at(py, px + std::max(0, (pw - 16) / 2), " Save to Library ");
     attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
 
     const char* opts[] = {"Bookmark only (web shortcut)", "Download (MP4 + MP3) -> ~/Downloads"};
@@ -1178,16 +1160,16 @@ void TUI::draw_save_prompt(const AppState& state) {
         if (oy >= state.term_h) break;
         if (i == state.save_prompt_idx) {
             attron(sel_attr());
-            mvprintw(oy, px + 2, " %-*s", pw - 5, utf8_truncate(opts[i], pw - 6).c_str());
+            print_at(oy, px + 2, " %-*s", pw - 5, utf8_truncate(opts[i], pw - 6).c_str());
             attroff(sel_attr());
         } else {
             attron(COLOR_PAIR(Color::BG));
-            mvprintw(oy, px + 3, "%s", utf8_truncate(opts[i], pw - 6).c_str());
+            print_at(oy, px + 3, "%s", utf8_truncate(opts[i], pw - 6).c_str());
             attroff(COLOR_PAIR(Color::BG));
         }
     }
     attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=select  Esc=cancel ", pw - 4).c_str());
+    print_at(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=select  Esc=cancel ", pw - 4).c_str());
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
 }
 
@@ -1195,8 +1177,8 @@ void TUI::draw_save_prompt(const AppState& state) {
 void TUI::draw_browser_popup(const AppState& state) {
     if (state.browser_choices.empty()) return;
     int pw = std::min(40, state.term_w - 4);
-    int ph = (int)state.browser_choices.size() + 4;
-    if (pw < 10 || ph > state.term_h - 2) return;
+    int ph = std::min(static_cast<int>(state.browser_choices.size())+4, state.term_h-2);
+    if (pw < 10 || ph < 4) return;
     int px = std::max(0, (state.term_w - pw) / 2);
     int py = std::max(0, (state.term_h - ph) / 2);
 
@@ -1204,27 +1186,28 @@ void TUI::draw_browser_popup(const AppState& state) {
     draw_box(py, px, ph, pw, Color::STATS);
 
     attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-    mvprintw(py, px + std::max(0, (pw - 16) / 2), " Select Browser ");
+    print_at(py, px + std::max(0, (pw - 16) / 2), " Select Browser ");
     attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
     attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + 1, px + 2, "%s", utf8_truncate("Pick your YouTube browser:", pw - 4).c_str());
+    print_at(py + 1, px + 2, "%s", utf8_truncate("Pick your YouTube browser:", pw - 4).c_str());
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
 
-    for (int i = 0; i < (int)state.browser_choices.size(); i++) {
+    const int first = std::max(0, state.browser_pick_idx-(ph-3)+1);
+    for (int i = 0; i < ph-3 && i+first < static_cast<int>(state.browser_choices.size()); ++i) {
         int row = py + 2 + i;
         if (row >= state.term_h) break;
-        if (i == state.browser_pick_idx) {
+        if (i+first == state.browser_pick_idx) {
             attron(sel_attr());
-            mvprintw(row, px + 2, " %-*s", pw - 5, utf8_truncate(state.browser_choices[i], pw - 6).c_str());
+            print_at(row, px + 2, " %-*s", pw - 5, utf8_truncate(state.browser_choices[i+first], pw - 6).c_str());
             attroff(sel_attr());
         } else {
             attron(COLOR_PAIR(Color::BG));
-            mvprintw(row, px + 3, "%s", utf8_truncate(state.browser_choices[i], pw - 6).c_str());
+            print_at(row, px + 3, "%s", utf8_truncate(state.browser_choices[i+first], pw - 6).c_str());
             attroff(COLOR_PAIR(Color::BG));
         }
     }
     attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=select  Esc=cancel ", pw - 4).c_str());
+    print_at(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=select  Esc=cancel ", pw - 4).c_str());
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
 }
 
@@ -1235,28 +1218,29 @@ void TUI::draw_browser_popup(const AppState& state) {
 // otherwise whatever's underneath shows through the "box" (which only draws a
 // border) and text from the layer below spills into it.
 void TUI::fill_rect(int y, int x, int h, int w, int cp) {
-    if (w < 1 || h < 1 || x < 0 || y < 0) return;
+    int rows, cols; getmaxyx(stdscr, rows, cols);
+    if (w < 1 || h < 1 || x < 0 || y < 0 || x >= cols || y >= rows) return;
+    w = std::min(w, cols-x); h = std::min(h, rows-y);
     attron(COLOR_PAIR(cp));
-    for (int r = 0; r < h; r++) {
-        move(y + r, x);
-        for (int c = 0; c < w; c++) addch(' ');
-    }
+    for (int r = 0; r < h; ++r) mvhline(y+r, x, ' ', w);
     attroff(COLOR_PAIR(cp));
 }
 
 void TUI::draw_box(int y, int x, int h, int w, int cp) {
+    int rows, cols; getmaxyx(stdscr, rows, cols);
+    w = std::min(w, cols-x); h = std::min(h, rows-y);
     if (w < 2 || h < 2 || x < 0 || y < 0) return;
     attron(COLOR_PAIR(cp));
-    mvaddstr(y, x, bd_.tl);
+    put_at(y, x, bd_.tl);
     hline_g(y, x + 1, w - 2);
-    mvaddstr(y, x + w - 1, bd_.tr);
+    put_at(y, x + w - 1, bd_.tr);
     for (int i = 1; i < h - 1; i++) {
-        mvaddstr(y + i, x,         bd_.v);
-        mvaddstr(y + i, x + w - 1, bd_.v);
+        put_at(y + i, x,         bd_.v);
+        put_at(y + i, x + w - 1, bd_.v);
     }
-    mvaddstr(y + h - 1, x, bd_.bl);
+    put_at(y + h - 1, x, bd_.bl);
     hline_g(y + h - 1, x + 1, w - 2);
-    mvaddstr(y + h - 1, x + w - 1, bd_.br);
+    put_at(y + h - 1, x + w - 1, bd_.br);
     attroff(COLOR_PAIR(cp));
 }
 
@@ -1273,11 +1257,11 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
     // Header row
     if (sy + 1 < ey) {
         attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-        mvprintw(sy + 1, 2, "Playlists (%d)", (int)pls.size());
+        print_at(sy + 1, 2, "Playlists (%d)", (int)pls.size());
         attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
         if (sy + 1 < ey) {
             attron(COLOR_PAIR(Color::BG) | A_DIM);
-            mvprintw(sy + 1, state.term_w - 18, "[n] new playlist");
+            print_at(sy + 1, state.term_w - 18, "[n] new playlist");
             attroff(COLOR_PAIR(Color::BG) | A_DIM);
         }
     }
@@ -1285,8 +1269,8 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
     if (pls.empty()) {
         if (sy + 3 < ey) {
             attron(COLOR_PAIR(Color::BG) | A_DIM);
-            mvprintw(sy + 3, 4, "No playlists yet (._.)");;
-            mvprintw(sy + 4, 4, "Search for a video, open its actions, and choose \"Add to playlist\".");
+            print_at(sy + 3, 4, "No playlists yet (._.)");;
+            print_at(sy + 4, 4, "Search for a video, open its actions, and choose \"Add to playlist\".");
             attroff(COLOR_PAIR(Color::BG) | A_DIM);
         }
         return;
@@ -1300,8 +1284,8 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
     // Column headers
     if (sy + 2 < ey) {
         attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(sy + 2, 3, "%-*s", name_w, "Name");
-        if (count_w > 0) mvprintw(sy + 2, 3 + name_w + 2, "Videos");
+        print_at(sy + 2, 3, "%-*s", name_w, "Name");
+        if (count_w > 0) print_at(sy + 2, 3 + name_w + 2, "Videos");
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
     }
 
@@ -1330,7 +1314,7 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
                 cp = THUMB_COLOR_BASE + slot;
             }
             attron(COLOR_PAIR(cp) | A_BOLD);
-            mvprintw(row, 2, "\xe2\x97\x8f ");  // UTF-8: ●
+            print_at(row, 2, "\xe2\x97\x8f ");  // UTF-8: ●
             attroff(COLOR_PAIR(cp) | A_BOLD);
         }
 
@@ -1339,16 +1323,16 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
 
         if (sel) {
             attron(sel_attr());
-            mvprintw(row, name_x, " %-*s", avail, utf8_truncate(pl.name, avail).c_str());
-            if (count_w > 0) printw("  %*d ", count_w - 3, (int)pl.videos.size());
+            print_at(row, name_x, " %-*s", avail, utf8_truncate(pl.name, avail).c_str());
+            if (count_w > 0) print_here("  %*d ", count_w - 3, (int)pl.videos.size());
             attroff(sel_attr());
         } else {
             attron(COLOR_PAIR(Color::TITLE));
-            mvprintw(row, name_x + 1, "%s", utf8_truncate(pl.name, avail).c_str());
+            print_at(row, name_x + 1, "%s", utf8_truncate(pl.name, avail).c_str());
             attroff(COLOR_PAIR(Color::TITLE));
             if (count_w > 0) {
                 attron(COLOR_PAIR(Color::STATS) | A_DIM);
-                mvprintw(row, 3 + name_w + 2, "%d", (int)pl.videos.size());
+                print_at(row, 3 + name_w + 2, "%d", (int)pl.videos.size());
                 attroff(COLOR_PAIR(Color::STATS) | A_DIM);
             }
         }
@@ -1357,7 +1341,7 @@ void TUI::draw_playlists_tab(const AppState& state, const Library* lib) {
     // Hint bar
     if (state.show_hints && ey - 1 > sy + 2) {
         attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(ey - 1, 2, "Enter=open  j/k=navigate  n=new  c=color");
+        print_at(ey - 1, 2, "Enter=open  j/k=navigate  n=new  c=color");
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
     }
 }
@@ -1382,14 +1366,14 @@ void TUI::draw_playlist_view(const AppState& state, const Library* lib) {
     if (sy + 1 < ey) {
         attron(COLOR_PAIR(Color::STATS) | A_BOLD);
         std::string hdr = pl->name + " (" + std::to_string(pl->videos.size()) + ")";
-        mvprintw(sy + 1, 2, "%s", utf8_truncate(hdr, lw - 4).c_str());
+        print_at(sy + 1, 2, "%s", utf8_truncate(hdr, lw - 4).c_str());
         attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
     }
 
     if (pl->videos.empty()) {
         if (sy + 3 < ey) {
             attron(COLOR_PAIR(Color::BG) | A_DIM);
-            mvprintw(sy + 3, 3, "%s", utf8_truncate("No videos yet (._.)", lw - 6).c_str());
+            print_at(sy + 3, 3, "%s", utf8_truncate("No videos yet (._.)", lw - 6).c_str());
             attroff(COLOR_PAIR(Color::BG) | A_DIM);
         }
     } else {
@@ -1408,12 +1392,12 @@ void TUI::draw_playlist_view(const AppState& state, const Library* lib) {
 
             if (sel) {
                 attron(sel_attr());
-                mvprintw(row, 1, " %s", title.c_str());
+                print_at(row, 1, " %s", title.c_str());
                 for (int j = tw2 + 1; j < iw; j++) addch(' ');
                 attroff(sel_attr());
             } else {
                 attron(COLOR_PAIR(Color::TITLE));
-                mvprintw(row, 2, "%s", title.c_str());
+                print_at(row, 2, "%s", title.c_str());
                 attroff(COLOR_PAIR(Color::TITLE));
             }
         }
@@ -1421,7 +1405,7 @@ void TUI::draw_playlist_view(const AppState& state, const Library* lib) {
 
     // Right panel: info for selected video
     if (rw > 4 && !pl->videos.empty() &&
-        state.playlist_video_idx < (int)pl->videos.size()) {
+        state.playlist_video_idx >= 0 && state.playlist_video_idx < (int)pl->videos.size()) {
         draw_box(sy, lw, ah + 1, rw, Color::BORDER);
         const auto& v = pl->videos[state.playlist_video_idx];
         int x = lw + 1, w2 = std::max(0, rw - 2);
@@ -1439,22 +1423,22 @@ void TUI::draw_playlist_view(const AppState& state, const Library* lib) {
 
         if (y < bot) {
             attron(COLOR_PAIR(Color::TITLE) | A_BOLD);
-            mvprintw(y++, x, "%s", utf8_truncate(v.title, w2).c_str());
+            print_at(y++, x, "%s", utf8_truncate(v.title, w2).c_str());
             attroff(COLOR_PAIR(Color::TITLE) | A_BOLD);
         }
         if (y < bot && !v.channel.empty()) {
             attron(COLOR_PAIR(Color::CHANNEL));
-            mvprintw(y++, x, "%s", utf8_truncate(v.channel, w2).c_str());
+            print_at(y++, x, "%s", utf8_truncate(v.channel, w2).c_str());
             attroff(COLOR_PAIR(Color::CHANNEL));
         }
         if (y < bot && v.duration_seconds > 0) {
             attron(COLOR_PAIR(Color::STATS));
-            mvprintw(y++, x, "%d:%02d", v.duration_seconds / 60, v.duration_seconds % 60);
+            print_at(y++, x, "%d:%02d", v.duration_seconds / 60, v.duration_seconds % 60);
             attroff(COLOR_PAIR(Color::STATS));
         }
         if (state.show_hints && bot - 1 > y) {
             attron(COLOR_PAIR(Color::BG) | A_DIM);
-            mvprintw(bot - 1, x, "%s", utf8_truncate("Enter=actions  Esc=back", w2).c_str());
+            print_at(bot - 1, x, "%s", utf8_truncate("Enter=actions  Esc=back", w2).c_str());
             attroff(COLOR_PAIR(Color::BG) | A_DIM);
         }
     }
@@ -1476,7 +1460,7 @@ void TUI::draw_playlist_actions_panel(const AppState& state, const Library* lib)
 
     // Left: info panel for selected video
     draw_box(sy, 0, ah + 1, lw, Color::BORDER);
-    if (state.playlist_video_idx < (int)pl->videos.size()) {
+    if (state.playlist_video_idx >= 0 && state.playlist_video_idx < (int)pl->videos.size()) {
         const auto& v = pl->videos[state.playlist_video_idx];
         int x = 1, w2 = std::max(0, lw - 2);
         int y = sy + 1, bot = sy + ah;
@@ -1491,12 +1475,12 @@ void TUI::draw_playlist_actions_panel(const AppState& state, const Library* lib)
         }
         if (y < bot) {
             attron(COLOR_PAIR(Color::TITLE) | A_BOLD);
-            mvprintw(y++, x, "%s", utf8_truncate(v.title, w2).c_str());
+            print_at(y++, x, "%s", utf8_truncate(v.title, w2).c_str());
             attroff(COLOR_PAIR(Color::TITLE) | A_BOLD);
         }
         if (y < bot && !v.channel.empty()) {
             attron(COLOR_PAIR(Color::CHANNEL));
-            mvprintw(y++, x, "%s", utf8_truncate(v.channel, w2).c_str());
+            print_at(y++, x, "%s", utf8_truncate(v.channel, w2).c_str());
             attroff(COLOR_PAIR(Color::CHANNEL));
         }
     }
@@ -1513,12 +1497,12 @@ void TUI::draw_playlist_actions_panel(const AppState& state, const Library* lib)
         int llen = utf8_display_width(lbl);
         if (sel) {
             attron(sel_attr());
-            mvprintw(row, lw + 1, " %s", lbl.c_str());
+            print_at(row, lw + 1, " %s", lbl.c_str());
             for (int j = llen + 1; j < iw2; j++) addch(' ');
             attroff(sel_attr());
         } else {
             attron(COLOR_PAIR(Color::BG));
-            mvprintw(row, lw + 2, "%s", lbl.c_str());
+            print_at(row, lw + 2, "%s", lbl.c_str());
             attroff(COLOR_PAIR(Color::BG));
         }
     }
@@ -1539,33 +1523,34 @@ void TUI::draw_playlist_picker(const AppState& state) {
 
     attron(COLOR_PAIR(Color::STATS) | A_BOLD);
     std::string title = " Add to Playlist ";
-    mvprintw(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
+    print_at(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
     attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
 
     int max_items = ph - 3;
-    for (int i = 0; i < (int)state.playlist_names.size() && i < max_items; i++) {
+    const int first = std::max(0, state.playlist_pick_idx-max_items+1);
+    for (int i = 0; i+first < (int)state.playlist_names.size() && i < max_items; i++) {
         int row = py + 1 + i;
         if (row >= state.term_h) break;
-        bool sel = (i == state.playlist_pick_idx);
-        bool is_create = (i == 0);
+        bool sel = (i+first == state.playlist_pick_idx);
+        bool is_create = (i+first == 0);
 
         if (sel) {
             attron(sel_attr());
-            mvprintw(row, px + 1, " %-*s ", pw - 4, utf8_truncate(state.playlist_names[i], pw - 5).c_str());
+            print_at(row, px + 1, " %-*s ", pw - 4, utf8_truncate(state.playlist_names[i+first], pw - 5).c_str());
             attroff(sel_attr());
         } else if (is_create) {
             attron(COLOR_PAIR(Color::ACCENT));
-            mvprintw(row, px + 2, "%s", utf8_truncate(state.playlist_names[i], pw - 4).c_str());
+            print_at(row, px + 2, "%s", utf8_truncate(state.playlist_names[i+first], pw - 4).c_str());
             attroff(COLOR_PAIR(Color::ACCENT));
         } else {
             attron(COLOR_PAIR(Color::BG));
-            mvprintw(row, px + 2, "%s", utf8_truncate(state.playlist_names[i], pw - 4).c_str());
+            print_at(row, px + 2, "%s", utf8_truncate(state.playlist_names[i+first], pw - 4).c_str());
             attroff(COLOR_PAIR(Color::BG));
         }
     }
 
     attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + ph - 1, px + 2, "Enter=select  Esc=cancel");
+    print_at(py + ph - 1, px + 2, "Enter=select  Esc=cancel");
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
 }
 
@@ -1583,11 +1568,11 @@ void TUI::draw_new_playlist_prompt(const AppState& state) {
 
     attron(COLOR_PAIR(Color::STATS) | A_BOLD);
     std::string title = " New Playlist ";
-    mvprintw(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
+    print_at(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
     attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
 
     attron(COLOR_PAIR(Color::BG));
-    mvprintw(py + 1, px + 2, "Name:");
+    print_at(py + 1, px + 2, "Name:");
     attroff(COLOR_PAIR(Color::BG));
 
     // Input field
@@ -1596,7 +1581,7 @@ void TUI::draw_new_playlist_prompt(const AppState& state) {
     int dw = utf8_display_width(disp);
 
     attron(COLOR_PAIR(Color::SEARCH_BOX));
-    mvprintw(py + 2, ix, "%s", disp.c_str());
+    print_at(py + 2, ix, "%s", disp.c_str());
     for (int i = dw; i < iw2; i++) addch('_');
     attroff(COLOR_PAIR(Color::SEARCH_BOX));
 
@@ -1604,7 +1589,7 @@ void TUI::draw_new_playlist_prompt(const AppState& state) {
     mvchgat(py + 2, ix + std::min(dw, iw2 - 1), 1, A_REVERSE, 0, nullptr);
 
     attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + ph - 1, px + 2, "Enter=create  Esc=cancel");
+    print_at(py + ph - 1, px + 2, "Enter=create  Esc=cancel");
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
 }
 
@@ -1617,7 +1602,7 @@ void TUI::center_text(int y, int width, const std::string& s, chtype attr) {
     std::string t = utf8_truncate(s, width);
     int x = (width - utf8_display_width(t)) / 2; if (x < 0) x = 0;
     if (attr) attron(attr);
-    mvprintw(y, x, "%s", t.c_str());
+    print_at(y, x, "%s", t.c_str());
     if (attr) attroff(attr);
 }
 
@@ -1626,7 +1611,7 @@ void TUI::center_text(int y, int width, const std::string& s, chtype attr) {
 void TUI::stream_header(const AppState& state, const std::string& title) {
     int W = state.term_w;
     attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
-    mvprintw(0, 1, "%s", utf8_truncate("♪ " + title, W - 2).c_str());
+    print_at(0, 1, "%s", utf8_truncate("♪ " + title, W - 2).c_str());
     attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
     attron(COLOR_PAIR(Color::BORDER) | A_DIM);
     hline_g(1, 1, W - 2);
@@ -1653,7 +1638,7 @@ void TUI::draw_settings(const AppState& state) {
         // Minimal fallback: a one-line hint so the user isn't stuck.
         fill_rect(state.term_h / 2, 0, 1, state.term_w, Color::BG);
         attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
-        mvprintw(state.term_h / 2, 1, "%s",
+        print_at(state.term_h / 2, 1, "%s",
                  utf8_truncate("Settings need a wider terminal", state.term_w - 2).c_str());
         attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
         return;
@@ -1666,7 +1651,7 @@ void TUI::draw_settings(const AppState& state) {
 
     // Title
     attron(COLOR_PAIR(Color::HEADER) | A_BOLD);
-    mvprintw(py, px + (pw - 10) / 2, " Settings ");
+    print_at(py, px + (pw - 10) / 2, " Settings ");
     attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
 
     // Tab bar  (5 tabs). On narrow panels use a compact single-line form.
@@ -1680,7 +1665,7 @@ void TUI::draw_settings(const AppState& state) {
             bool active = (state.settings_tab == t);
             if (active) attron(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
             else        attron(COLOR_PAIR(Color::STATS));
-            mvprintw(py + 1, tx, " %s ", kSettingsTabs[t]);
+            print_at(py + 1, tx, " %s ", kSettingsTabs[t]);
             if (active) attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
             else        attroff(COLOR_PAIR(Color::STATS));
             tx += (int)strlen(kSettingsTabs[t]) + 3;
@@ -1692,7 +1677,7 @@ void TUI::draw_settings(const AppState& state) {
             bool active = (state.settings_tab == t);
             if (active) attron(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
             else        attron(COLOR_PAIR(Color::STATS));
-            mvprintw(py + 1, tx, " %s ", kSettingsTabsShort[t]);
+            print_at(py + 1, tx, " %s ", kSettingsTabsShort[t]);
             if (active) attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD | A_REVERSE);
             else        attroff(COLOR_PAIR(Color::STATS));
             tx += (int)strlen(kSettingsTabsShort[t]) + 3;
@@ -1718,11 +1703,11 @@ void TUI::draw_settings(const AppState& state) {
             if (cur) {
                 paint_sel_bar(y, px + 1, pw - 2);
                 attron(sel_attr());
-                mvprintw(y, px + 2, "%-*s", pw - 4, name.c_str());
+                print_at(y, px + 2, "%-*s", pw - 4, name.c_str());
                 attroff(sel_attr());
             } else {
                 attron(COLOR_PAIR(Color::BG));
-                mvprintw(y, px + 3, "%s", name.c_str());
+                print_at(y, px + 3, "%s", name.c_str());
                 attroff(COLOR_PAIR(Color::BG));
             }
         }
@@ -1745,15 +1730,15 @@ void TUI::draw_settings(const AppState& state) {
             if (cur) {
                 paint_sel_bar(y, px + 1, pw - 2);
                 attron(sel_attr());
-                mvprintw(y, px + 2, "%s", label.c_str());
-                mvprintw(y, keycol, "%s", key.c_str());
+                print_at(y, px + 2, "%s", label.c_str());
+                print_at(y, keycol, "%s", key.c_str());
                 attroff(sel_attr());
             } else {
                 attron(COLOR_PAIR(Color::BG));
-                mvprintw(y, px + 3, "%s", label.c_str());
+                print_at(y, px + 3, "%s", label.c_str());
                 attroff(COLOR_PAIR(Color::BG));
                 attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
-                mvprintw(y, keycol, "%s", key.c_str());
+                print_at(y, keycol, "%s", key.c_str());
                 attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
             }
         }
@@ -1783,11 +1768,11 @@ void TUI::draw_settings(const AppState& state) {
             rowtext += "  " + rows[i].value;
             if (cur) { paint_sel_bar(y, px+1, pw-2); attron(sel_attr()); }
             else attron(COLOR_PAIR(Color::BG));
-            mvprintw(y, px + 2, "%-*s", pw - 4, utf8_truncate(rowtext, pw - 4).c_str());
+            print_at(y, px + 2, "%-*s", pw - 4, utf8_truncate(rowtext, pw - 4).c_str());
             if (cur) attroff(sel_attr()); else attroff(COLOR_PAIR(Color::BG));
         }
         attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(list_top + nrows + 1, px + 2, "%s",
+        print_at(list_top + nrows + 1, px + 2, "%s",
             utf8_truncate("Enter: cycle/toggle  Ctrl-B: backend  Ctrl-S/q: close", pw-4).c_str());
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
 
@@ -1797,7 +1782,7 @@ void TUI::draw_settings(const AppState& state) {
         auto draw_row = [&](bool sel, const std::string& text) {
             if (sel) { paint_sel_bar(y, px+1, pw-2); attron(sel_attr()); }
             else attron(COLOR_PAIR(Color::BG));
-            mvprintw(y, px + 2, "%-*s", pw - 4, utf8_truncate(text, pw - 4).c_str());
+            print_at(y, px + 2, "%-*s", pw - 4, utf8_truncate(text, pw - 4).c_str());
             if (sel) attroff(sel_attr()); else attroff(COLOR_PAIR(Color::BG));
             y++;
         };
@@ -1807,7 +1792,7 @@ void TUI::draw_settings(const AppState& state) {
         std::string loop_row  = std::string("Loop on end......  ") + (state.loop_enabled ? "on" : "off");
         draw_row(state.settings_sel == 1, loop_row);
         attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(y + 1, px + 2, "%s",
+        print_at(y + 1, px + 2, "%s",
             utf8_truncate("Enter: set timer / toggle loop   Ctrl-T: timer", pw-4).c_str());
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
 
@@ -1815,25 +1800,25 @@ void TUI::draw_settings(const AppState& state) {
         // ── About tab ────────────────────────────────────────────────────────
         int y = list_top;
         attron(COLOR_PAIR(Color::TITLE) | A_BOLD);
-        mvprintw(y++, px + 2, "ytcui %s", VERSION);
+        print_at(y++, px + 2, "ytcui %s", VERSION);
         attroff(COLOR_PAIR(Color::TITLE) | A_BOLD);
         attron(COLOR_PAIR(Color::BG));
-        mvprintw(y++, px + 2, "A terminal YouTube client.");
+        print_at(y++, px + 2, "A terminal YouTube client.");
         y++;
-        mvprintw(y++, px + 2, "github.com/MilkmanAbi/ytcui");
-        mvprintw(y++, px + 2, "github.com/MilkmanAbi/ytcui-dl");
+        print_at(y++, px + 2, "github.com/MilkmanAbi/ytcui");
+        print_at(y++, px + 2, "github.com/MilkmanAbi/ytcui-dl");
         y++;
-        mvprintw(y++, px + 2, "MIT License");
+        print_at(y++, px + 2, "MIT License");
         attroff(COLOR_PAIR(Color::BG));
     }
 
     // Footer: toast (if any) else the key hints
     attron(COLOR_PAIR(Color::STATS));
     if (!state.settings_toast.empty()) {
-        mvprintw(py + ph - 2, px + 2, "%s",
+        print_at(py + ph - 2, px + 2, "%s",
                  utf8_truncate(state.settings_toast, pw - 4).c_str());
     } else if (state.settings_capturing) {
-        mvprintw(py + ph - 2, px + 2, "press a key to bind  (Esc cancels)");
+        print_at(py + ph - 2, px + 2, "press a key to bind  (Esc cancels)");
     }
     static const char* hints[5] = {
         "Tab: switch   j/k: move   Enter: apply   Ctrl-S/q: close",
@@ -1844,7 +1829,7 @@ void TUI::draw_settings(const AppState& state) {
     };
     int ti = std::clamp(state.settings_tab, 0, 4);
     if (state.show_hints)
-        mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(hints[ti], pw - 4).c_str());
+        print_at(py + ph - 1, px + 2, "%s", utf8_truncate(hints[ti], pw - 4).c_str());
     attroff(COLOR_PAIR(Color::STATS));
 }
 
@@ -1893,22 +1878,22 @@ void TUI::draw_shortcuts(const AppState& state) {
     fill_rect(py, px, ph, pw, Color::BG);   // opaque background
     draw_box(py, px, ph, pw, Color::BG);
     attron(COLOR_PAIR(Color::HEADER) | A_BOLD);
-    mvprintw(py, px + (pw - 12) / 2, " Shortcuts ");
+    print_at(py, px + (pw - 12) / 2, " Shortcuts ");
     attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
 
     // Draw bindings
     int max_rows = ph - 3;
     for (int i = 0; i < n && i < max_rows; i++) {
         attron(COLOR_PAIR(Color::ACCENT) | A_BOLD);
-        mvprintw(py + 2 + i, px + 2, "%-22s", bindings[i].key);
+        print_at(py + 2 + i, px + 2, "%-22s", bindings[i].key);
         attroff(COLOR_PAIR(Color::ACCENT) | A_BOLD);
         attron(COLOR_PAIR(Color::STATS));
-        mvprintw(py + 2 + i, px + 24, "%s", bindings[i].action);
+        print_at(py + 2 + i, px + 24, "%s", bindings[i].action);
         attroff(COLOR_PAIR(Color::STATS));
     }
 
     attron(COLOR_PAIR(Color::STATS));
-    mvprintw(py + ph - 1, px + (pw - 22) / 2, " press any key to close ");
+    print_at(py + ph - 1, px + (pw - 22) / 2, " press any key to close ");
     attroff(COLOR_PAIR(Color::STATS));
 }
 
@@ -1942,11 +1927,11 @@ void TUI::stream_menu(const AppState& state, const Library*) {
         if (sel) {
             paint_sel_bar(y, 1, W - 2);
             attron(sel_attr() | A_BOLD);
-            mvprintw(y, 2, "%s", utf8_truncate(row, W - 4).c_str());
+            print_at(y, 2, "%s", utf8_truncate(row, W - 4).c_str());
             attroff(sel_attr() | A_BOLD);
         } else {
             attron(COLOR_PAIR(Color::TITLE));
-            mvprintw(y, 3, "%s", utf8_truncate(row, W - 5).c_str());
+            print_at(y, 3, "%s", utf8_truncate(row, W - 5).c_str());
             attroff(COLOR_PAIR(Color::TITLE));
         }
     }
@@ -1963,7 +1948,7 @@ void TUI::stream_search(const AppState& state) {
     int iw = W - 6;
     std::string q = utf8_truncate(state.search_query, iw);
     attron(COLOR_PAIR(Color::TITLE));
-    mvprintw(by + 1, 3, "%s", q.c_str());
+    print_at(by + 1, 3, "%s", q.c_str());
     attroff(COLOR_PAIR(Color::TITLE));
     mvchgat(by + 1, 3 + std::min(utf8_display_width(q), iw - 1), 1, A_REVERSE, 0, nullptr);
     if (state.show_hints)
@@ -1988,10 +1973,10 @@ void TUI::stream_browse(const AppState& state) {
             for (int i = 0; i < vis && start + i < (int)names.size(); i++) {
                 int idx = start + i, y = top + i; bool s = (idx == sel);
                 if (s) { paint_sel_bar(y, 1, W - 2); attron(sel_attr() | A_BOLD);
-                    mvprintw(y, 2, "%s", utf8_truncate(names[idx], W - 4).c_str());
+                    print_at(y, 2, "%s", utf8_truncate(names[idx], W - 4).c_str());
                     attroff(sel_attr() | A_BOLD);
                 } else { attron(COLOR_PAIR(Color::TITLE));
-                    mvprintw(y, 3, "%s", utf8_truncate(names[idx], W - 5).c_str());
+                    print_at(y, 3, "%s", utf8_truncate(names[idx], W - 5).c_str());
                     attroff(COLOR_PAIR(Color::TITLE)); }
             }
         }
@@ -2026,11 +2011,11 @@ void TUI::stream_browse(const AppState& state) {
         if (s) {
             paint_sel_bar(y, 1, W - 2);
             attron(sel_attr() | A_BOLD);
-            mvprintw(y, 2, "%s", utf8_truncate(v.title, W - 4).c_str());
+            print_at(y, 2, "%s", utf8_truncate(v.title, W - 4).c_str());
             attroff(sel_attr() | A_BOLD);
         } else {
             attron(COLOR_PAIR(Color::TITLE));
-            mvprintw(y, 2, "%s", utf8_truncate(v.title, W - 3).c_str());
+            print_at(y, 2, "%s", utf8_truncate(v.title, W - 3).c_str());
             attroff(COLOR_PAIR(Color::TITLE));
         }
         if (y + 1 < H - 2) {
@@ -2039,7 +2024,7 @@ void TUI::stream_browse(const AppState& state) {
             if (!dur.empty() && dur != "0:00") meta += "  ·  " + dur;
             else if (v.is_live) meta += "  ·  LIVE";
             attron(COLOR_PAIR(Color::CHANNEL) | A_DIM);
-            mvprintw(y + 1, 3, "%s", utf8_truncate(meta, W - 4).c_str());
+            print_at(y + 1, 3, "%s", utf8_truncate(meta, W - 4).c_str());
             attroff(COLOR_PAIR(Color::CHANNEL) | A_DIM);
         }
     }
@@ -2055,7 +2040,7 @@ void TUI::stream_actions(const AppState& state) {
     bool uni = TermCaps::get().unicode;
 
     const Video* v = (!state.results.empty() &&
-                      state.selected_result < (int)state.results.size())
+                      state.selected_result >= 0 && state.selected_result < (int)state.results.size())
                      ? &state.results[state.selected_result] : nullptr;
     int y = std::max(3, H / 2 - 3);
     if (v) { center_text(y, W, v->title, COLOR_PAIR(Color::TITLE) | A_BOLD);
@@ -2073,9 +2058,9 @@ void TUI::stream_actions(const AppState& state) {
         int x = (W - lw) / 2; if (x < 2) x = 2;
         if (s) {
             paint_sel_bar(ry, x - 2, lw + 4);
-            attron(sel_attr() | A_BOLD); mvprintw(ry, x, "%s", lab.c_str()); attroff(sel_attr() | A_BOLD);
+            attron(sel_attr() | A_BOLD); print_at(ry, x, "%s", lab.c_str()); attroff(sel_attr() | A_BOLD);
         } else {
-            attron(COLOR_PAIR(Color::TITLE)); mvprintw(ry, x, "%s", lab.c_str()); attroff(COLOR_PAIR(Color::TITLE));
+            attron(COLOR_PAIR(Color::TITLE)); print_at(ry, x, "%s", lab.c_str()); attroff(COLOR_PAIR(Color::TITLE));
         }
     }
     if (state.show_hints)
@@ -2119,18 +2104,18 @@ void TUI::stream_playing(const AppState& state) {
             // Elapsed portion is bright accent; upcoming portion is dim.
             if (live_prog && i >= filled) attron(COLOR_PAIR(Color::STATS) | A_DIM);
             else                          attron(COLOR_PAIR(Color::ACCENT));
-            mvprintw(y, wx + i, "%s", uni ? bars[pidx] : (i < filled ? "=" : "-"));
+            print_at(y, wx + i, "%s", uni ? bars[pidx] : (i < filled ? "=" : "-"));
             if (live_prog && i >= filled) attroff(COLOR_PAIR(Color::STATS) | A_DIM);
             else                          attroff(COLOR_PAIR(Color::ACCENT));
         }
 
         attron(COLOR_PAIR(Color::STATS) | A_DIM);
         std::string elapsed = live_prog ? fmt_time(state.playback_pos) : "0:00";
-        mvprintw(y + 1, wx, "%s", elapsed.c_str());
+        print_at(y + 1, wx, "%s", elapsed.c_str());
         std::string dur = live_prog ? fmt_time(state.playback_dur)
                         : (v.is_live ? "LIVE"
                           : (v.duration.empty() || v.duration == "0:00") ? "--:--" : v.duration);
-        mvprintw(y + 1, wx + wf - (int)dur.size(), "%s", dur.c_str());
+        print_at(y + 1, wx + wf - (int)dur.size(), "%s", dur.c_str());
         attroff(COLOR_PAIR(Color::STATS) | A_DIM);
         y += 3;
     }
@@ -2168,27 +2153,27 @@ void TUI::draw_timer_prompt(const AppState& state) {
     draw_box(py, px, ph, pw, Color::STATS);
 
     attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-    mvprintw(py, px + std::max(0, (pw - 14) / 2), " Sleep Timer ");
+    print_at(py, px + std::max(0, (pw - 14) / 2), " Sleep Timer ");
     attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
 
     attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + 1, px + 2, "%s", utf8_truncate("e.g.  30m   1h23m   45s", pw - 4).c_str());
+    print_at(py + 1, px + 2, "%s", utf8_truncate("e.g.  30m   1h23m   45s", pw - 4).c_str());
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
 
     // Input line
     attron(COLOR_PAIR(Color::TITLE) | A_BOLD);
     std::string prompt = "> " + state.timer_prompt_input + "_";
-    mvprintw(py + 3, px + 2, "%s", utf8_truncate(prompt, pw - 4).c_str());
+    print_at(py + 3, px + 2, "%s", utf8_truncate(prompt, pw - 4).c_str());
     attroff(COLOR_PAIR(Color::TITLE) | A_BOLD);
 
     if (state.timer_status.size()) {
         attron(COLOR_PAIR(Color::CHANNEL));
-        mvprintw(py + 4, px + 2, "%s", utf8_truncate("Active: " + state.timer_status, pw - 4).c_str());
+        print_at(py + 4, px + 2, "%s", utf8_truncate("Active: " + state.timer_status, pw - 4).c_str());
         attroff(COLOR_PAIR(Color::CHANNEL));
     }
 
     attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=set  Ctrl-T=cancel  Esc=close ", pw - 4).c_str());
+    print_at(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=set  Ctrl-T=cancel  Esc=close ", pw - 4).c_str());
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
 }
 
@@ -2206,12 +2191,12 @@ void TUI::draw_queue_view(const AppState& state) {
 
     attron(COLOR_PAIR(Color::STATS) | A_BOLD);
     std::string title = n == 0 ? " Queue (empty) " : " Queue (" + std::to_string(n) + ") ";
-    mvprintw(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
+    print_at(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
     attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
 
     if (n == 0) {
         attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(py + 2, px + 2, "Queue is empty.  Use 'Add to queue' from the action menu.");
+        print_at(py + 2, px + 2, "Queue is empty.  Use 'Add to queue' from the action menu.");
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
     } else {
         int max_rows = ph - 3;
@@ -2226,91 +2211,74 @@ void TUI::draw_queue_view(const AppState& state) {
             std::string line = std::to_string(idx + 1) + ". " + v.title;
             if (idx == state.queue_sel) {
                 attron(sel_attr());
-                mvprintw(row, px + 1, " %-*s", pw - 3, utf8_truncate(line, pw - 4).c_str());
+                print_at(row, px + 1, " %-*s", pw - 3, utf8_truncate(line, pw - 4).c_str());
                 attroff(sel_attr());
             } else {
                 attron(COLOR_PAIR(Color::BG));
-                mvprintw(row, px + 2, "%s", utf8_truncate(line, pw - 4).c_str());
+                print_at(row, px + 2, "%s", utf8_truncate(line, pw - 4).c_str());
                 attroff(COLOR_PAIR(Color::BG));
             }
         }
     }
     attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=play  d/Del=remove  Ctrl-Q/Esc=close ", pw - 4).c_str());
+    print_at(py + ph - 1, px + 2, "%s", utf8_truncate(" Enter=play  d/Del=remove  Ctrl-Q/Esc=close ", pw - 4).c_str());
     attroff(COLOR_PAIR(Color::BG) | A_DIM);
 }
 
 // ─── v5 overlay: share menu (QR code + URL) ───────────────────────────────────
 void TUI::draw_share_menu(const AppState& state) {
     if (state.share_url.empty()) return;
-
-    auto qr = ytcui::share::encode(state.share_url);
-    auto rows = ytcui::share::to_ascii(qr);
-    int qr_h  = (int)rows.size();
-    int qr_w  = rows.empty() ? 0 : (int)rows[0].size();
-
-    // QR fits only when the panel is wide enough to hold all columns without clipping.
-    // A clipped QR code is unreadable; skip it entirely and show just the URL.
-    bool qr_fits = (state.term_w - 4 >= qr_w + 2);
-
-    int pw, ph;
-    if (qr_fits) {
-        ph = std::min(qr_h + 5, state.term_h - 2);
-        pw = std::min(std::max(qr_w + 4, (int)state.share_url.size() + 6), state.term_w - 4);
-    } else {
-        ph = std::min(6, state.term_h - 2);
-        pw = std::min(std::max(32, (int)state.share_url.size() + 6), state.term_w - 4);
+    if (qr_url_ != state.share_url) {
+        qr_url_ = state.share_url;
+        qr_matrix_ = ytcui::share::encode(qr_url_);
     }
+    const bool safe_blocks = TermCaps::get().unicode && wcwidth(L'▀') == 1 && wcwidth(L'▄') == 1 && wcwidth(L'█') == 1;
+    // Apple Terminal's ambiguous-width profile and font fallback can change block geometry.
+    // Spaces with explicit backgrounds work without either font or Unicode assumptions.
+    bool half = state.share_mode == 2 || (state.share_mode == 0 &&
+        TermCaps::get().id != TermId::AppleTerminal && TermCaps::get().blocks_native && !mono_mode_ && safe_blocks);
+    if (!safe_blocks) half = false;
+    auto raster = ytcui::share::rasterize(qr_matrix_, half ? ytcui::share::QrStyle::HalfBlocks : ytcui::share::QrStyle::Cells);
+    const int max_w = std::max(0, state.term_w-2), max_h = std::max(0, state.term_h);
+    bool fits = raster.cols > 0 && raster.cols+4 <= max_w && raster.rows+4 <= max_h;
+    int pw = std::min(max_w, std::max(36, fits ? raster.cols+4 : 56));
+    int ph = std::min(max_h, fits ? raster.rows+4 : 8);
     if (pw < 12 || ph < 4) return;
-    int px = std::max(0, (state.term_w - pw) / 2);
-    int py = std::max(0, (state.term_h - ph) / 2);
-
-    for (int i = 0; i < ph && py + i < state.term_h; i++) mvhline(py + i, px, ' ', pw);
-    draw_box(py, px, ph, pw, Color::STATS);
-
-    attron(COLOR_PAIR(Color::STATS) | A_BOLD);
-    mvprintw(py, px + std::max(0, (pw - 10) / 2), " Share ");
-    attroff(COLOR_PAIR(Color::STATS) | A_BOLD);
-
-    if (qr_fits) {
-        // QR code: dark module = █ (full block), light = space, dark-on-light
-        int qr_x = px + std::max(1, (pw - qr_w) / 2);
-        for (int r = 0; r < qr_h && py + 1 + r < state.term_h - 1; r++) {
-            attron(COLOR_PAIR(Color::BG));
-            for (int c = 0; c < (int)rows[r].size(); c++) {
-                bool dark = (rows[r][c] == 'X');
-                if (dark) attron(A_REVERSE);
-                mvaddch(py + 1 + r, qr_x + c, ' ');
-                if (dark) attroff(A_REVERSE);
-            }
-            attroff(COLOR_PAIR(Color::BG));
+    int px = (state.term_w-pw)/2, py = (state.term_h-ph)/2;
+    attrset(A_NORMAL);
+    fill_rect(py, px, ph, pw, Color::BG);
+    draw_box(py, px, ph, pw, Color::BORDER);
+    print_at(py, px+2, " Share ");
+    int text_y = py+2;
+    if (fits) {
+        const int qx = px+(pw-raster.cols)/2, qy = py+1;
+        for (int y = 0; y < raster.rows; ++y) for (int x = 0; x < raster.cols; ++x) {
+            unsigned char cell = raster.cells[static_cast<size_t>(y)*raster.cols+x];
+            // Discard inherited bold, dim, theme colours and reverse attributes.
+            attrset(qr_colors_ ? COLOR_PAIR(Color::QR) : A_REVERSE);
+            if (cell == 3) { attrset(qr_colors_ ? COLOR_PAIR(Color::QR)|A_REVERSE : A_NORMAL); mvaddch(qy+y, qx+x, ' '); }
+            else if (cell == 0) mvaddch(qy+y, qx+x, ' ');
+            else put_at(qy+y, qx+x, cell == 2 ? "▀" : "▄");
         }
-        int url_row = py + 1 + qr_h;
-        if (url_row < state.term_h - 2 && url_row < py + ph - 2) {
-            attron(COLOR_PAIR(Color::TITLE));
-            mvprintw(url_row, px + 2, "%s", utf8_truncate(state.share_url, pw - 4).c_str());
-            attroff(COLOR_PAIR(Color::TITLE));
-        }
+        attrset(A_NORMAL);
+        text_y = qy+raster.rows;
     } else {
-        attron(COLOR_PAIR(Color::TITLE));
-        mvprintw(py + 2, px + 2, "%s", utf8_truncate(state.share_url, pw - 4).c_str());
-        attroff(COLOR_PAIR(Color::TITLE));
-        attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(py + 3, px + 2, "Widen terminal for QR code");
-        attroff(COLOR_PAIR(Color::BG) | A_DIM);
+        print_at(text_y++, px+2, "%s", utf8_truncate(qr_matrix_.size ? "Enlarge terminal or press m for compact QR" : "URL too long for QR", pw-4).c_str());
+        if (qr_matrix_.size) print_at(text_y++, px+2, "%s", utf8_truncate("Needs " + std::to_string(raster.cols+6) + " columns x " + std::to_string(raster.rows+4) + " rows", pw-4).c_str());
     }
-    attron(COLOR_PAIR(Color::BG) | A_DIM);
-    mvprintw(py + ph - 1, px + 2, "%s", utf8_truncate(" Copied to clipboard  —  any key to close ", pw - 4).c_str());
-    attroff(COLOR_PAIR(Color::BG) | A_DIM);
+    print_at(text_y++, px+2, "%s", utf8_truncate(state.share_url, pw-4).c_str());
+    if (text_y < py+ph-1) print_at(text_y, px+2, "%s", utf8_truncate(state.share_copy_status, pw-4).c_str());
+    print_at(py+ph-1, px+1, "%s", utf8_truncate(" c=copy  m=cells/compact  Esc=close ", pw-2).c_str());
+    attrset(A_NORMAL);
 }
 
 void TUI::draw_res_menu(const AppState& state) {
     if (state.res_labels.empty()) return;
 
     int n   = (int)state.res_labels.size();
-    int pw  = 24;
+    int pw  = std::min(32, state.term_w - 4);
     int ph  = std::min(n + 4, state.term_h - 4);
-    if (ph < 4) return;
+    if (ph < 4 || pw < 12) return;
     int px  = std::max(0, (state.term_w - pw) / 2);
     int py  = std::max(0, (state.term_h - ph) / 2);
 
@@ -2319,13 +2287,14 @@ void TUI::draw_res_menu(const AppState& state) {
 
     attron(COLOR_PAIR(Color::HEADER) | A_BOLD);
     std::string title = " Quality ";
-    mvprintw(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
+    print_at(py, px + std::max(0, (pw - (int)title.size()) / 2), "%s", title.c_str());
     attroff(COLOR_PAIR(Color::HEADER) | A_BOLD);
 
     int vis   = ph - 3;
     int scroll = 0;
     if (state.res_sel >= scroll + vis) scroll = state.res_sel - vis + 1;
     if (state.res_sel < scroll)        scroll = state.res_sel;
+    scroll = std::max(0, scroll);
 
     for (int i = 0; i < vis && scroll + i < n; i++) {
         int idx = scroll + i;
@@ -2338,18 +2307,18 @@ void TUI::draw_res_menu(const AppState& state) {
         if (sel) {
             paint_sel_bar(ry, px + 1, pw - 2);
             attron(sel_attr() | A_BOLD);
-            mvprintw(ry, px + 2, "%s", utf8_truncate(lab, pw - 4).c_str());
+            print_at(ry, px + 2, "%s", utf8_truncate(lab, pw - 4).c_str());
             attroff(sel_attr() | A_BOLD);
         } else {
             attron(COLOR_PAIR(Color::TITLE));
-            mvprintw(ry, px + 2, "%s", utf8_truncate(lab, pw - 4).c_str());
+            print_at(ry, px + 2, "%s", utf8_truncate(lab, pw - 4).c_str());
             attroff(COLOR_PAIR(Color::TITLE));
         }
     }
 
     if (state.show_hints) {
         attron(COLOR_PAIR(Color::BG) | A_DIM);
-        mvprintw(py + ph - 1, px + 2, "%s",
+        print_at(py + ph - 1, px + 2, "%s",
                  utf8_truncate("⏎ apply  esc cancel", pw - 4).c_str());
         attroff(COLOR_PAIR(Color::BG) | A_DIM);
     }
@@ -2370,6 +2339,7 @@ void TUI::stream_more_actions(const AppState& state) {
     int scroll = 0;
     if (state.selected_action >= scroll + vis) scroll = state.selected_action - vis + 1;
     if (state.selected_action < scroll)        scroll = state.selected_action;
+    scroll = std::max(0, scroll);
 
     for (int i = 0; i < vis && scroll + i < n; i++) {
         int idx = scroll + i;
@@ -2381,75 +2351,17 @@ void TUI::stream_more_actions(const AppState& state) {
         if (sel) {
             paint_sel_bar(ry, x - 2, lw + 4);
             attron(sel_attr() | A_BOLD);
-            mvprintw(ry, x, "%s", lab.c_str());
+            print_at(ry, x, "%s", lab.c_str());
             attroff(sel_attr() | A_BOLD);
         } else {
             attron(COLOR_PAIR(Color::TITLE));
-            mvprintw(ry, x, "%s", lab.c_str());
+            print_at(ry, x, "%s", lab.c_str());
             attroff(COLOR_PAIR(Color::TITLE));
         }
     }
     if (state.show_hints)
         center_text(H - 2, W, "j/k · ⏎ execute · esc back", COLOR_PAIR(Color::BG) | A_DIM);
     stream_status(state);
-}
-
-// Suspend ncurses, render the QR fullscreen with half-block chars, wait for any key, restore.
-void TUI::show_qr_fullscreen(const std::string& url) {
-    auto qr = ytcui::share::encode(url);
-
-    def_prog_mode();
-    endwin();
-
-    // ANSI: black fg (30), white bg (47) for proper QR contrast.
-    const char* DARK = "\033[30;47m";
-    const char* RST  = "\033[0m";
-
-    printf("\033[2J\033[H");  // clear + home
-
-    if (qr.size == 0) {
-        printf("%s  URL too long for QR code  %s\n\n  %s\n\nPress any key...\n", DARK, RST, url.c_str());
-        fflush(stdout);
-        getchar();
-        reset_prog_mode();
-        clear(); refresh();
-        return;
-    }
-
-    const int n = qr.full_size();
-
-    // Top quiet margin row
-    printf("%s", DARK);
-    for (int x = 0; x < n + 2; x++) printf(" ");
-    printf("%s\n", RST);
-
-    // QR rows: process 2 QR rows per terminal row using half-block chars.
-    for (int y = 0; y < n; y += 2) {
-        printf("%s ", DARK);  // left margin
-        for (int x = 0; x < n; x++) {
-            bool top = qr.at_padded(x, y);
-            bool bot = (y + 1 < n) ? qr.at_padded(x, y + 1) : false;
-            if      (top && bot)  printf("\xe2\x96\x88");  // █ full block
-            else if (top)         printf("\xe2\x96\x80");  // ▀ upper half
-            else if (bot)         printf("\xe2\x96\x84");  // ▄ lower half
-            else                  printf(" ");
-        }
-        printf(" %s\n", RST);  // right margin
-    }
-    // If n is odd, bottom quiet row already covered by the last loop iteration's bot=false.
-    // Add explicit bottom margin row.
-    printf("%s", DARK);
-    for (int x = 0; x < n + 2; x++) printf(" ");
-    printf("%s\n", RST);
-
-    printf("\n  %s\n\n  Press any key to return...\n", url.c_str());
-    fflush(stdout);
-
-    getchar();
-
-    reset_prog_mode();
-    clear();
-    refresh();
 }
 
 } // namespace ytui

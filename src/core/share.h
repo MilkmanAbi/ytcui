@@ -42,11 +42,17 @@ struct QrMatrix {
 // the largest supported symbol.
 QrMatrix encode(const std::string& text);
 
-// Render as terminal rows using half-block glyphs, two module rows per text
-// row. Each returned string is one line; 'X' marks dark, ' ' light, and the
-// caller maps those onto colours. Provided so the matrix can be tested and
-// rendered without FTXUI.
+// Uncompressed debug rows: one X/space per module including the quiet zone.
+// Use rasterize() for the actual full-cell or compact terminal display.
 std::vector<std::string> to_ascii(const QrMatrix& m);
+
+enum class QrStyle { Cells, HalfBlocks };
+struct QrRaster {
+    int cols = 0, rows = 0;
+    // Cells: 0=light, 3=dark (two columns/module). HalfBlocks: bit 1=top, bit 0=bottom.
+    std::vector<unsigned char> cells;
+};
+QrRaster rasterize(const QrMatrix& matrix, QrStyle style);
 
 // Will a code for `text` fit in a terminal this big, drawn with half-blocks?
 bool fits_in(const std::string& text, int cols, int rows);

@@ -16,6 +16,8 @@ public:
     bool handle(int ch, AppState& state);
 
 private:
+    std::string utf8_pending_;
+    std::string* utf8_target_ = nullptr;
     bool handle_search_input(int ch, AppState& state);
     void handle_tabs_input(int ch, AppState& state);
     void handle_results_input(int ch, AppState& state);

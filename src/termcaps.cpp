@@ -12,6 +12,7 @@
 #include <sys/time.h>
 #include <curses.h>
 #include <term.h>
+#include <chrono>
 
 namespace ytui {
 
@@ -54,7 +55,7 @@ static std::string run_queries(int timeout_ms) {
     ssize_t w = write(STDOUT_FILENO, q, strlen(q)); (void)w;
 
     std::string resp; char c;
-    struct timeval start{}, now{}; gettimeofday(&start, nullptr);
+    const auto start = std::chrono::steady_clock::now();
     bool saw_da1 = false;
     for (;;) {
         fd_set rf; FD_ZERO(&rf); FD_SET(STDIN_FILENO, &rf);
@@ -66,9 +67,8 @@ static std::string run_queries(int timeout_ms) {
                 if (c == 'c' && resp.find("[?") != std::string::npos) { saw_da1 = true; break; }
             }
         }
-        gettimeofday(&now, nullptr);
-        long ms = (now.tv_sec - start.tv_sec) * 1000 + (now.tv_usec - start.tv_usec) / 1000;
-        if (ms > timeout_ms) break;
+        const auto elapsed = std::chrono::steady_clock::now()-start;
+        if (elapsed >= std::chrono::milliseconds(timeout_ms) || resp.size() >= 4096) break;
     }
     (void)saw_da1;
     // Drain and discard anything still sitting unread in the kernel's tty
@@ -166,6 +166,7 @@ TermCaps& TermCaps::get() { static TermCaps c; return c; }
 
 void TermCaps::detect() {
     TermCaps& c = get();
+    c = TermCaps{};
     c.term = env_str("TERM");
     c.is_tty = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 
@@ -203,7 +204,8 @@ void TermCaps::detect() {
     // var is the authoritative mlterm signal, so it goes first. Not trusted
     // through a multiplexer (tmux/screen is what's actually interpreting our
     // escapes then, not mlterm).
-    if (!c.in_multiplexer && !env_str("MLTERM").empty()) { c.id = TermId::MLterm; }
+    if (!c.in_multiplexer) {
+    if (!env_str("MLTERM").empty()) { c.id = TermId::MLterm; }
     else if (tp == "Apple_Terminal")            { c.id = TermId::AppleTerminal; }
     else if (tp == "iTerm.app")            { c.id = TermId::ITerm2; }
     else if (!env_str("KITTY_WINDOW_ID").empty() || lc_term.find("kitty") != std::string::npos)
@@ -223,10 +225,12 @@ void TermCaps::detect() {
     else if (lc_term.find("rxvt")      != std::string::npos) c.id = TermId::Rxvt;
     else if (lc_term.compare(0, 2, "st") == 0)               c.id = TermId::St;
 
+    }
+
     // Runtime queries refine/confirm identity and discover sixel + cell size.
     // Skipped inside a multiplexer (replies are unreliable / wrapped).
     std::string r;
-    if (c.is_tty && !c.in_multiplexer) r = run_queries(250);
+    if (c.is_tty && !c.in_multiplexer && c.id != TermId::AppleTerminal) r = run_queries(250);
     parse_responses(c, r);
 
     // ── Capability mapping (env + identity + research-backed per-terminal facts).
@@ -327,7 +331,7 @@ void TermCaps::detect() {
     if (c.da1_seen && !c.da1_has_sixel) c.sixel = false;
 
     // $COLORTERM can upgrade an under-reported terminal (errs safe).
-    if (ct_truecolor && c.id != TermId::MLterm) { c.truecolor = true; c.colors = 16777216; }
+    if (ct_truecolor && c.id != TermId::MLterm && c.id != TermId::AppleTerminal && c.id != TermId::LinuxConsole) { c.truecolor = true; c.colors = 16777216; }
 
     // ── Strict-monochrome hardening ───────────────────────────────────────────
     // mlterm renders A_BOLD/A_DIM as reverse-video blocks and dumps sixel bytes
@@ -358,7 +362,7 @@ void TermCaps::refine_from_ncurses() {
     if (bce == 0) c.bce = false; else if (bce == 1) c.bce = true;
     if (::can_change_color()) c.can_change_color = true;
     // Reverse video is only meaningfully "ok" when we have colour to invert.
-    if (c.colors < 8) c.reverse_ok = false;
+    // Reverse video is useful on monochrome terminals too.
 }
 
 void TermCaps::detect_for_diag() {

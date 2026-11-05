@@ -25,6 +25,9 @@ struct Result {
     bool ok() const { return ran && !timed_out && exit_code == 0; }
 };
 
+// Optional input is sent to stdin with the same deadline and SIGPIPE protection.
+// capture_output=false redirects child output to /dev/null, including background
+// clipboard owners that would otherwise retain inherited capture pipes.
 // Run argv[0] with argv, capturing stdout and stderr. Nothing is passed
 // through a shell. `timeout_ms` of 0 waits indefinitely.
 //
@@ -32,7 +35,8 @@ struct Result {
 // playlist can be very large, and an unbounded read is a memory hazard driven
 // by remote data.
 Result run(const std::vector<std::string>& argv, int timeout_ms = 30000,
-           std::size_t max_output = 32u * 1024 * 1024);
+           std::size_t max_output = 32u * 1024 * 1024,
+           const std::string* input = nullptr, bool capture_output = true);
 
 // Is this on PATH? Uses execvp's own lookup rather than a shell.
 bool exists(const std::string& program);

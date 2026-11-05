@@ -1,4 +1,5 @@
 #include "core/share.h"
+#include "core/proc.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -14,8 +15,7 @@ namespace ytcui::share {
 namespace {
 
 bool have_cmd(const char* name) {
-    const std::string cmd = std::string("command -v ") + name + " >/dev/null 2>&1";
-    return std::system(cmd.c_str()) == 0;
+    return ytcui::proc::exists(name);
 }
 
 // Pipe `text` into a command's stdin. Used for every external clipboard tool;
@@ -23,31 +23,11 @@ bool have_cmd(const char* name) {
 // line would be a quoting bug waiting to happen.
 bool pipe_to(const char* argv0, const std::vector<const char*>& args,
              const std::string& text) {
-    int fds[2];
-    if (::pipe(fds) != 0) return false;
-
-    const pid_t pid = ::fork();
-    if (pid < 0) { ::close(fds[0]); ::close(fds[1]); return false; }
-    if (pid == 0) {
-        ::close(fds[1]);
-        ::dup2(fds[0], STDIN_FILENO);
-        ::close(fds[0]);
-        const int null = ::open("/dev/null", O_WRONLY);
-        if (null >= 0) { ::dup2(null, STDOUT_FILENO); ::dup2(null, STDERR_FILENO); }
-        std::vector<char*> argv;
-        argv.push_back(const_cast<char*>(argv0));
-        for (const char* a : args) argv.push_back(const_cast<char*>(a));
-        argv.push_back(nullptr);
-        ::execvp(argv0, argv.data());
-        ::_exit(127);
-    }
-    ::close(fds[0]);
-    const ssize_t written = ::write(fds[1], text.data(), text.size());
-    ::close(fds[1]);
-
-    int st = 0;
-    ::waitpid(pid, &st, 0);
-    return written == (ssize_t)text.size() && WIFEXITED(st) && WEXITSTATUS(st) == 0;
+    std::vector<std::string> command{argv0};
+    for (const char* argument : args) command.emplace_back(argument);
+    // Clipboard tools may fork a selection-owner daemon. Its inherited output
+    // must not hold capture pipes open after the front-end has exited.
+    return proc::run(command, 1500, 65536, &text, false).ok();
 }
 
 std::string base64(const std::string& in) {
@@ -91,6 +71,7 @@ bool QrMatrix::at_padded(int x, int y) const {
 
 QrMatrix encode(const std::string& text) {
     QrMatrix out;
+    if (text.find('\0') != std::string::npos) return out;
     try {
         // Medium correction: a terminal QR is usually scanned off a clean
         // screen rather than crumpled paper, and a lower version matters more
@@ -121,6 +102,23 @@ std::vector<std::string> to_ascii(const QrMatrix& m) {
         rows.push_back(std::move(row));
     }
     return rows;
+}
+
+QrRaster rasterize(const QrMatrix& matrix, QrStyle style) {
+    QrRaster raster;
+    if (matrix.size <= 0) return raster;
+    const int n = matrix.full_size();
+    const bool half = style == QrStyle::HalfBlocks;
+    raster.cols = half ? n : 2 * n;
+    raster.rows = half ? (n + 1) / 2 : n;
+    raster.cells.resize(static_cast<size_t>(raster.cols) * raster.rows);
+    for (int y = 0; y < raster.rows; ++y) for (int x = 0; x < raster.cols; ++x) {
+        unsigned char cell;
+        if (half) cell = (matrix.at_padded(x, 2*y) ? 2 : 0) | (matrix.at_padded(x, 2*y+1) ? 1 : 0);
+        else cell = matrix.at_padded(x / 2, y) ? 3 : 0;
+        raster.cells[static_cast<size_t>(y) * raster.cols + x] = cell;
+    }
+    return raster;
 }
 
 bool fits_in(const std::string& text, int cols, int rows) {
@@ -164,20 +162,8 @@ std::vector<std::string> available_tools() {
 CopyResult copy(const std::string& text, bool allow_osc52) {
     CopyResult r;
 
-    if (allow_osc52 && ::isatty(STDOUT_FILENO)) {
-        const std::string seq = osc52_sequence(text);
-        if (::write(STDOUT_FILENO, seq.data(), seq.size()) == (ssize_t)seq.size()) {
-            // There is no reply to an OSC 52 write, so success here means
-            // "the terminal was told", not "the clipboard definitely changed".
-            // Said plainly in the detail string rather than claimed outright.
-            r.ok = true;
-            r.method = CopyMethod::Osc52;
-            r.detail = "sent to the terminal via OSC 52";
-            return r;
-        }
-    }
 
-#ifdef YTCUI_MACOS
+#if defined(__APPLE__) || defined(YTCUI_MACOS)
     if (have_cmd("pbcopy") && pipe_to("pbcopy", {}, text)) {
         r.ok = true; r.method = CopyMethod::PbCopy; r.detail = "pbcopy";
         return r;
@@ -212,6 +198,19 @@ CopyResult copy(const std::string& text, bool allow_osc52) {
         return r;
     }
 
+    if (allow_osc52 && ::isatty(STDOUT_FILENO)) {
+        const std::string seq = osc52_sequence(text);
+        if (::write(STDOUT_FILENO, seq.data(), seq.size()) == (ssize_t)seq.size()) {
+            // There is no reply to an OSC 52 write, so success here means
+            // "the terminal was told", not "the clipboard definitely changed".
+            // Said plainly in the detail string rather than claimed outright.
+            r.ok = true;
+            r.method = CopyMethod::Osc52;
+            r.detail = "sent to the terminal via OSC 52";
+            return r;
+        }
+    }
+
     r.detail = "no clipboard method available "
                "(tried OSC 52, wl-copy, xclip, xsel, pbcopy)";
     return r;
@@ -220,7 +219,7 @@ CopyResult copy(const std::string& text, bool allow_osc52) {
 // ---------------------------------------------------------------------------
 bool open_in_browser(const std::string& url) {
     const char* openers[] = {
-#ifdef YTCUI_MACOS
+#if defined(__APPLE__) || defined(YTCUI_MACOS)
         "open",
 #endif
         "xdg-open", "gio", "x-www-browser", "sensible-browser", "www-browser",

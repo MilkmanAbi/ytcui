@@ -36,10 +36,9 @@
 
 namespace ytui {
 
-// Color pairs 1-16 are reserved for UI elements (Color::BG … Color::DESC).
-// Pairs 17-272 are reserved for thumbnail 256-color rendering.
-// THUMB_COLOR_BASE + N maps color index N (0-255) → pair (17+N).
-constexpr int THUMB_COLOR_BASE = 18;
+// Color pairs 1-18 are reserved for UI/selection/QR elements.
+// Thumbnail colors are mapped into the legacy slots from THUMB_COLOR_BASE to 255.
+constexpr int THUMB_COLOR_BASE = 19;
 
 // ─── Structured cell returned by render_color() ───────────────────────────────
 struct ThumbCell {

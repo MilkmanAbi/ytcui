@@ -217,6 +217,9 @@ struct AppState {
     // Share overlay
     bool show_share = false;
     std::string share_url;       // URL shown in the QR + clipboard
+    int share_mode = 0;           // 0=automatic, 1=font-independent cells, 2=half-blocks
+    Panel share_return_focus = Panel::Results;
+    std::string share_copy_status;
 
     // Timer prompt (Ctrl-T)
     bool show_timer_prompt = false;
@@ -289,6 +292,7 @@ namespace Color {
     constexpr int PUBLISHED  = 14;
     constexpr int BOOKMARK   = 15;
     constexpr int DESC       = 16;
+    constexpr int QR = 18;
     constexpr int SELECTED_BAR = 17;  // full-width selection bar (fg on bg)
 }
 

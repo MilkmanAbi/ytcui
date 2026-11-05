@@ -1,6 +1,8 @@
 #include "core/text.h"
 
 #include <cstdio>
+#include <wchar.h>
+#include <climits>
 
 namespace ytcui::txt {
 namespace {
@@ -93,7 +95,7 @@ std::vector<uint32_t> decode_utf8(std::string_view s) {
 
         if (i + (std::size_t)len > s.size()) {           // truncated at the end
             out.push_back(0xFFFD);
-            break;
+            ++i; continue;
         }
         bool ok = true;
         for (int k = 1; k < len; ++k) {
@@ -102,6 +104,10 @@ std::vector<uint32_t> decode_utf8(std::string_view s) {
             cp = (cp << 6) | (cc & 0x3F);
         }
         if (!ok) { out.push_back(0xFFFD); ++i; continue; }
+        const uint32_t minimum[] = {0, 0, 0x80, 0x800, 0x10000};
+        if (cp < minimum[len] || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+            out.push_back(0xfffd); i += static_cast<std::size_t>(len); continue;
+        }
         out.push_back(cp);
         i += (std::size_t)len;
     }
@@ -109,6 +115,7 @@ std::vector<uint32_t> decode_utf8(std::string_view s) {
 }
 
 std::string encode_utf8(uint32_t cp) {
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) cp = 0xfffd;
     std::string o;
     if (cp < 0x80) {
         o += (char)cp;
@@ -173,6 +180,50 @@ std::string pad_display(std::string_view s, int cols) {
     std::string out = clip_display(s, cols);
     const int w = display_width(out);
     if (w < cols) out.append((std::size_t)(cols - w), ' ');
+    return out;
+}
+
+std::string terminal_sanitize(std::string_view text, bool unicode) {
+    std::string out;
+    bool have_base = false;
+    for (uint32_t cp : decode_utf8(text)) {
+        if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0) || cp == 0xad ||
+            cp == 0x61c || cp == 0x6dd || cp == 0x70f || cp == 0x8e2 ||
+            (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x2028 && cp <= 0x202e) ||
+            (cp >= 0x2060 && cp <= 0x206f) || cp == 0xfeff ||
+            (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0000 && cp <= 0xe01ef)) continue;
+        if (!unicode && cp >= 0x80) continue;
+        const int width = cp <= static_cast<uint32_t>(WCHAR_MAX) ? ::wcwidth(static_cast<wchar_t>(cp)) : -1;
+        if (width < 0 || (width == 0 && !have_base)) continue;
+        out += encode_utf8(cp);
+        if (width > 0) have_base = true;
+    }
+    return out;
+}
+
+int terminal_width(std::string_view text, bool unicode) {
+    int width = 0;
+    for (uint32_t cp : decode_utf8(terminal_sanitize(text, unicode)))
+        width += ::wcwidth(static_cast<wchar_t>(cp));
+    return width;
+}
+
+std::string terminal_clip(std::string_view text, int cols, bool unicode, bool ellipsis) {
+    if (cols <= 0) return {};
+    auto clean = terminal_sanitize(text, unicode);
+    const auto codepoints = decode_utf8(clean);
+    int total = 0;
+    for (uint32_t cp : codepoints) total += ::wcwidth(static_cast<wchar_t>(cp));
+    const bool cut = total > cols;
+    const int dots = cut && ellipsis ? std::min(3, cols) : 0;
+    int used = 0;
+    std::string out;
+    for (uint32_t cp : codepoints) {
+        const int width = ::wcwidth(static_cast<wchar_t>(cp));
+        if (used + width > cols - dots) break;
+        out += encode_utf8(cp); used += width;
+    }
+    if (dots) out.append(static_cast<size_t>(dots), '.');
     return out;
 }
 

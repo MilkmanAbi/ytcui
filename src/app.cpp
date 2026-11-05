@@ -589,6 +589,18 @@ int App::run() {
             continue;
         }
 
+        if (state_.show_share) {
+            input_.handle(ch, state_);
+            if (state_.status_message == "__SHARE_COPY__") {
+                const auto& caps = TermCaps::get();
+                auto result = ytcui::share::copy(state_.share_url,
+                    caps.id != TermId::AppleTerminal && !caps.in_multiplexer);
+                state_.share_copy_status = result.detail;
+                state_.status_message = result.detail;
+            }
+            continue;
+        }
+
         // ── In-app settings UI (Ctrl-S) ───────────────────────────────────────
         // Ctrl-S is byte 0x13 (also what Ctrl-Shift-S sends; terminals ignore
         // Shift for control chars). Flow control was disabled in TUI::init so
@@ -1453,6 +1465,11 @@ void App::handle_settings_key(int ch) {
     // — but with guards. Some keys can't be bound (they'd make the UI or the
     // process uncontrollable), and the Enter that STARTED the capture must not
     // register as the bound key.
+    if (state_.settings_capturing && ch == KEY_MOUSE) {
+        MEVENT event; getmouse(&event);
+        state_.settings_toast = "Press a keyboard key to bind";
+        return;
+    }
     if (state_.settings_capturing) {
         // Enter/CR/LF: this is almost always the residue of the Enter press
         // that began the capture (terminals send CR+LF; ncurses can deliver the
@@ -1732,11 +1749,12 @@ void App::apply_timer_input() {
 }
 
 void App::show_share_menu(const std::string& url) {
-    auto res = ytcui::share::copy(url);
-    state_.status_message = res.ok ? "Copied to clipboard!" : "Clipboard unavailable";
-    tui_.render(state_, &library_);
-    tui_.show_qr_fullscreen(url);
-    state_.status_message = rgreet();
+    state_.share_return_focus = state_.focus;
+    state_.share_url = url;
+    state_.share_mode = 0;
+    state_.share_copy_status = "Press c to copy the link";
+    state_.show_share = true;
+    state_.focus = Panel::ShareMenu;
 }
 
 void App::switch_backend(BackendKind k) {
