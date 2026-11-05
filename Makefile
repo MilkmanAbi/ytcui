@@ -1,219 +1,60 @@
 # ═══════════════════════════════════════════════════════════════════════════════
-# ytcui — Cross-platform Makefile (Linux, macOS, FreeBSD)
+# ytcui v5 — Makefile wrapper around CMake
+#
+# Primary build system is CMake (CMakeLists.txt).  This wrapper exists so that
+# OIS (which calls `make` and expects `./ytcui`) continues to work unchanged.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ─── OS Detection ───────────────────────────────────────────────────────────────
 UNAME_S := $(shell uname -s)
+BUILD_DIR ?= build
+PREFIX    ?= /usr/local
 
+# Detect a Ninja installation; fall back to the default make generator.
+NINJA := $(shell command -v ninja 2>/dev/null)
+ifneq ($(NINJA),)
+    CMAKE_GENERATOR := -G Ninja
+else
+    CMAKE_GENERATOR :=
+endif
+
+# On macOS, steer CMake toward Homebrew/MacPorts OpenSSL and ncurses when they
+# are available (they are keg-only and not on the default search path).
+CMAKE_EXTRA :=
 ifeq ($(UNAME_S),Darwin)
-    OS_TYPE := macos
-else ifeq ($(UNAME_S),FreeBSD)
-    OS_TYPE := freebsd
-else ifeq ($(UNAME_S),DragonFly)
-    OS_TYPE := dragonfly
-else ifeq ($(UNAME_S),NetBSD)
-    OS_TYPE := netbsd
-else ifeq ($(UNAME_S),OpenBSD)
-    OS_TYPE := openbsd
-else
-    OS_TYPE := linux
-endif
-
-# ─── Compiler Selection ─────────────────────────────────────────────────────────
-# Prefer g++ on Linux, clang++ on macOS/BSD (unless CXX is set)
-ifeq ($(origin CXX),default)
-    ifeq ($(OS_TYPE),macos)
-        CXX := clang++
-    else ifeq ($(OS_TYPE),freebsd)
-        CXX := clang++
-    else
-        CXX := g++
-    endif
-endif
-
-# ─── Base Flags ─────────────────────────────────────────────────────────────────
-CXXFLAGS += -std=c++17 -Wall -Wextra -O3 -Iinclude
-
-# Required for wide-char functions (ncursesw)
-CXXFLAGS += -D_XOPEN_SOURCE_EXTENDED
-
-# ─── Platform-specific defines ──────────────────────────────────────────────────
-ifeq ($(OS_TYPE),macos)
-    CXXFLAGS += -DYTUI_MACOS
-else ifeq ($(OS_TYPE),freebsd)
-    CXXFLAGS += -DYTUI_FREEBSD
-else ifeq ($(OS_TYPE),dragonfly)
-    CXXFLAGS += -DYTUI_FREEBSD
-else
-    CXXFLAGS += -DYTUI_LINUX
-endif
-
-# ─── macOS: prime PKG_CONFIG_PATH for keg-only Homebrew + MacPorts ─────────────
-# Homebrew's curl, ncurses, openssl@3 are ALL keg-only — they install into the
-# Cellar but are NOT symlinked into /opt/homebrew (or /usr/local) and their .pc
-# files are NOT in the default PKG_CONFIG_PATH. We must add them explicitly, or
-# pkg-config returns nothing and the build falls back to the Apple system libs.
-# MacPorts puts everything under /opt/local which *is* covered by a
-# PKG_CONFIG_PATH addition. We do this once here, before any pkg-config call.
-ifeq ($(OS_TYPE),macos)
     BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
-    # Append keg-only formula pc paths (brew --prefix <formula> gives the keg path)
-    BREW_PKG_CONFIG_PATHS := \
-        $(shell brew --prefix curl     2>/dev/null)/lib/pkgconfig \
-        $(shell brew --prefix ncurses  2>/dev/null)/lib/pkgconfig \
-        $(shell brew --prefix openssl@3 2>/dev/null)/lib/pkgconfig \
-        $(shell brew --prefix openssl@1.1 2>/dev/null)/lib/pkgconfig
-    # MacPorts adds /opt/local/lib/pkgconfig which pkg-config already knows,
-    # but make it explicit so it survives sudo environments.
-    MACPORTS_PKG_CONFIG_PATH := /opt/local/lib/pkgconfig:/opt/local/share/pkgconfig
-    # Build a colon-separated list: existing PKG_CONFIG_PATH + brew paths + macports
-    EXTRA_PC_PATH := $(subst $(eval ) ,:,$(strip $(BREW_PKG_CONFIG_PATHS))):$(MACPORTS_PKG_CONFIG_PATH)
-    export PKG_CONFIG_PATH := $(EXTRA_PC_PATH)$(if $(PKG_CONFIG_PATH),:$(PKG_CONFIG_PATH),)
-endif
-
-ifeq ($(OS_TYPE),macos)
-    # PKG_CONFIG_PATH is primed above with keg-only brew paths + MacPorts.
-    # pkg-config now finds ncurses/curl/openssl regardless of which PM installed them.
-    NCURSES_CFLAGS := $(shell pkg-config --cflags ncursesw 2>/dev/null || pkg-config --cflags ncurses 2>/dev/null)
-    NCURSES_LIBS   := $(shell pkg-config --libs   ncursesw 2>/dev/null || pkg-config --libs   ncurses 2>/dev/null)
-    ifeq ($(NCURSES_LIBS),)
-        # Last resort: Apple system ncurses (5.7). Functional but no 256-colour pairs.
-        NCURSES_LIBS := -lncurses
-    endif
-else ifeq ($(OS_TYPE),freebsd)
-    # FreeBSD: ncurses is in base system
-    NCURSES_CFLAGS :=
-    NCURSES_LIBS := -lncursesw
-else
-    # Linux: Use pkg-config
-    NCURSES_LIBS := $(shell pkg-config --libs ncursesw 2>/dev/null || echo "-lncursesw")
-    NCURSES_CFLAGS := $(shell pkg-config --cflags ncursesw 2>/dev/null || echo "")
-endif
-
-# Accurate old-ncurses warning: probe the curses.h the compiler will actually
-# use (with the final include flags) instead of guessing from install paths.
-# This stops the false "Apple system ncurses" warning when the toolchain's
-# default search path already finds MacPorts/Homebrew ncurses 6.
-HASH := \#
-NCURSES_HDR_MAJOR := $(shell echo '$(HASH)include <curses.h>' | $(CXX) $(CXXFLAGS) $(NCURSES_CFLAGS) -E -dM -x c++ - 2>/dev/null | grep '$(HASH)define NCURSES_VERSION_MAJOR' | awk '{print $$3}')
-SYSTEM_NCURSES_WARNING :=
-ifeq ($(OS_TYPE),macos)
-    ifneq ($(NCURSES_HDR_MAJOR),6)
-        # 5.x (Apple system, from 2008) lacks 256-colour / extended-pair
-        # support and mishandles high colour pairs. The code guards against
-        # this at runtime, but a modern ncurses (Homebrew or MacPorts) is
-        # strongly recommended.
-        SYSTEM_NCURSES_WARNING := 1
+    ifneq ($(BREW_PREFIX),)
+        CMAKE_EXTRA += -DOPENSSL_ROOT_DIR=$(shell brew --prefix openssl 2>/dev/null)
+        CMAKE_EXTRA += -DCURSES_INCLUDE_PATH=$(shell brew --prefix ncurses 2>/dev/null)/include
+        CMAKE_EXTRA += -DCURSES_LIBRARY=$(shell brew --prefix ncurses 2>/dev/null)/lib/libncursesw.dylib
     endif
 endif
 
-CXXFLAGS += $(NCURSES_CFLAGS)
-LDFLAGS += $(NCURSES_LIBS) -lpthread $(YTCUIDL_LIBS) $(SIXEL_LIBS)
+VERSION := $(shell cat VERSION 2>/dev/null || echo "5.0.0")
 
-# ─── libatomic: 32-bit GCC targets need it for std::atomic<int64_t> ──────────
-# On 32-bit arches (ppc, i386, armv6/7, mips32, …) GCC cannot inline 64-bit
-# atomic ops and instead emits calls to __atomic_fetch_add_8 / __atomic_load_8
-# / __atomic_fetch_sub_8 etc., which live in libatomic. Clang always inlines
-# these regardless of pointer width, so we only probe when not using clang.
-# __SIZEOF_POINTER__ is 4 on 32-bit targets and 8 on 64-bit; multiply by 8 to
-# get the pointer bit-width and compare against 32.
-ifeq ($(findstring clang,$(shell $(CXX) --version 2>/dev/null | head -1)),)
-    POINTER_BITS := $(shell $(CXX) -dM -E - </dev/null 2>/dev/null \
-                    | awk '/^#define __SIZEOF_POINTER__/{print $$3*8}')
-    ifeq ($(POINTER_BITS),32)
-        LDFLAGS += -latomic
-    endif
-endif
+.PHONY: all clean install uninstall version tests
 
-# ─── Backend Selection ──────────────────────────────────────────────────────────
-# BACKEND=ytcuidl  (default) — built-in InnerTube client, no yt-dlp dependency
-# BACKEND=ytdlp              — shell out to yt-dlp (legacy)
-# install.sh writes the user's choice here so it survives the OIS sudo re-exec.
--include .ytcui-build.conf
-BACKEND ?= ytcuidl
+all: $(BUILD_DIR)/ytcui
+	cp $(BUILD_DIR)/ytcui ./ytcui
+	@echo "Build complete: ./ytcui (v$(VERSION))"
 
-ifeq ($(BACKEND),ytcuidl)
-    CXXFLAGS += -DUSE_YTCUIDL
-    # ytcui-dl v2 dropped libcurl entirely — it does its own TLS/socket I/O
-    # (see ytcui-dl/include/yt_http.h) — so the build needs OpenSSL + zlib
-    # instead of libcurl. We still need the CFLAGS, not just LIBS: on
-    # multiarch distros the headers live under e.g. /usr/include/<triplet>
-    # and aren't on the default search path, and on macOS OpenSSL is
-    # keg-only (covered by the PKG_CONFIG_PATH priming above, which already
-    # includes openssl@3's .pc directory).
-    YTCUIDL_CFLAGS := $(shell pkg-config --cflags openssl zlib 2>/dev/null)
-    YTCUIDL_LIBS   := $(shell pkg-config --libs openssl zlib 2>/dev/null || echo "-lssl -lcrypto -lz")
-    CXXFLAGS += $(YTCUIDL_CFLAGS)
-else
-    YTCUIDL_LIBS :=
-endif
+$(BUILD_DIR)/ytcui: $(BUILD_DIR)/CMakeCache.txt
+	cmake --build $(BUILD_DIR)
 
-# ─── Optional: in-process SIXEL via libsixel ────────────────────────────────────
-# SIXEL=libsixel  — link libsixel and encode sixel thumbnails in-process (one
-#                   fewer subprocess per thumbnail). Optional; the default sixel
-#                   path shells out to chafa (already a runtime dependency), so
-#                   no extra build/runtime dependency unless you opt in.
-SIXEL ?= chafa
-ifeq ($(SIXEL),libsixel)
-    SIXEL_CFLAGS := $(shell pkg-config --cflags libsixel 2>/dev/null)
-    SIXEL_LIBS   := $(shell pkg-config --libs libsixel 2>/dev/null || echo "-lsixel")
-    CXXFLAGS += -DUSE_LIBSIXEL $(SIXEL_CFLAGS)
-else
-    SIXEL_LIBS :=
-endif
-
-
-SRC_DIR = src
-INC_DIR = include
-OBJ_DIR = build
-BIN_DIR = .
-
-SOURCES = $(wildcard $(SRC_DIR)/*.cpp)
-OBJECTS = $(SOURCES:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
-TARGET = $(BIN_DIR)/ytcui
-
-VERSION := $(shell cat VERSION 2>/dev/null || echo "2.5.0")
-# Make the runtime version match the VERSION file (was hardcoded in types.h).
-CXXFLAGS += -DYTUI_VERSION='"$(VERSION)"'
-
-# ─── Targets ────────────────────────────────────────────────────────────────────
-.PHONY: all clean install uninstall version info
-
-all: info $(TARGET)
-
-info:
-	@echo "Building ytcui v$(VERSION) for $(OS_TYPE) using $(CXX) [backend=$(BACKEND) sixel=$(SIXEL)]"
-ifeq ($(SYSTEM_NCURSES_WARNING),1)
-	@echo "  WARNING: building against ncurses $(if $(NCURSES_HDR_MAJOR),$(NCURSES_HDR_MAJOR).x,(unknown)) — coloured thumbnails are"
-	@echo "           limited on ncurses older than 6. A modern ncurses is recommended"
-	@echo "           (Homebrew: brew install ncurses · MacPorts: port install ncurses)."
-endif
-
-$(TARGET): $(OBJECTS) | $(BIN_DIR)
-	$(CXX) $(OBJECTS) -o $@ $(LDFLAGS)
-	@echo "Build complete: $@ (v$(VERSION))"
-
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(OBJ_DIR):
-	mkdir -p $(OBJ_DIR)
-
-$(BIN_DIR):
-	mkdir -p $(BIN_DIR)
+$(BUILD_DIR)/CMakeCache.txt:
+	cmake -B $(BUILD_DIR) $(CMAKE_GENERATOR) \
+	      -DCMAKE_BUILD_TYPE=Release $(CMAKE_EXTRA)
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
+	rm -rf $(BUILD_DIR) ytcui
 	@echo "Clean complete"
 
-version:
-	@echo "$(VERSION)"
+tests: $(BUILD_DIR)/CMakeCache.txt
+	cmake --build $(BUILD_DIR)
+	ctest --test-dir $(BUILD_DIR) --output-on-failure
 
-PREFIX ?= /usr/local
-
-install: $(TARGET)
+install: all
 	install -d $(DESTDIR)$(PREFIX)/bin
-	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/
+	install -m 755 ytcui $(DESTDIR)$(PREFIX)/bin/
 	install -d $(DESTDIR)$(PREFIX)/share/ytcui
 	install -m 644 VERSION $(DESTDIR)$(PREFIX)/share/ytcui/
 	@echo "Installed to $(DESTDIR)$(PREFIX)/bin/ytcui"
@@ -223,12 +64,5 @@ uninstall:
 	rm -rf $(DESTDIR)$(PREFIX)/share/ytcui
 	@echo "Uninstalled"
 
-# ─── Dependencies ───────────────────────────────────────────────────────────────
-$(OBJ_DIR)/app.o:     $(SRC_DIR)/app.cpp     $(INC_DIR)/app.h $(INC_DIR)/types.h $(INC_DIR)/tui.h $(INC_DIR)/youtube.h $(INC_DIR)/player.h $(INC_DIR)/input.h $(INC_DIR)/config.h $(INC_DIR)/library.h $(INC_DIR)/log.h $(INC_DIR)/thumbs.h $(INC_DIR)/auth.h $(INC_DIR)/theme.h
-$(OBJ_DIR)/config.o:  $(SRC_DIR)/config.cpp  $(INC_DIR)/config.h $(INC_DIR)/theme.h
-$(OBJ_DIR)/input.o:   $(SRC_DIR)/input.cpp   $(INC_DIR)/input.h $(INC_DIR)/types.h
-$(OBJ_DIR)/main.o:    $(SRC_DIR)/main.cpp    $(INC_DIR)/app.h $(INC_DIR)/log.h $(INC_DIR)/player.h $(INC_DIR)/youtube.h $(INC_DIR)/types.h $(INC_DIR)/theme.h
-$(OBJ_DIR)/mpv_ipc.o: $(SRC_DIR)/mpv_ipc.cpp $(INC_DIR)/mpv_ipc.h $(INC_DIR)/log.h
-$(OBJ_DIR)/player.o:  $(SRC_DIR)/player.cpp  $(INC_DIR)/player.h $(INC_DIR)/mpv_ipc.h $(INC_DIR)/compat.h $(INC_DIR)/types.h $(INC_DIR)/log.h
-$(OBJ_DIR)/tui.o:     $(SRC_DIR)/tui.cpp     $(INC_DIR)/tui.h $(INC_DIR)/types.h $(INC_DIR)/library.h $(INC_DIR)/thumbs.h $(INC_DIR)/theme.h
-$(OBJ_DIR)/youtube.o: $(SRC_DIR)/youtube.cpp $(INC_DIR)/youtube.h $(INC_DIR)/types.h $(INC_DIR)/log.h
+version:
+	@echo "$(VERSION)"

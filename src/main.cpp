@@ -1,4 +1,5 @@
 #include "app.h"
+#include "termination.h"
 #include "log.h"
 #include "player.h"
 #include "youtube.h"
@@ -27,7 +28,6 @@ static ytfast::CurlGlobalInit g_curl_init;
 #include <fstream>
 #include <sstream>
 
-static ytui::App* g_app = nullptr;
 static std::atomic<bool> g_update_available{false};
 static std::string g_remote_version;
 
@@ -91,12 +91,7 @@ static void check_for_updates_async() {
 // ─── Signal handler ───────────────────────────────────────────────────────────
 
 static void signal_handler(int sig) {
-    if (g_app) g_app->force_cleanup();
-    fprintf(stderr, "\nCaught signal %d, cleaning up...\n", sig);
-    // _exit, not exit: terminate immediately without running static destructors
-    // (curl_global_cleanup / singleton teardown) while prefetch/update threads
-    // may still be alive. exit() is also not async-signal-safe; _exit() is.
-    _exit(1);
+    ytui::termination_requested = sig;
 }
 
 // ─── --diag: deep system diagnostic dump ──────────────────────────────────────
@@ -653,6 +648,8 @@ int main(int argc, char* argv[]) {
         std::string video_id = argv[2];
         std::string out_dir  = argv[3];
         std::string cookies  = argc >= 5 ? argv[4] : "";
+        ytui::Config download_config; download_config.load();
+        ytui::YouTube::configure_cookies(download_config.cookies_file);
         auto res = ytui::YouTube::download_both(video_id, out_dir, cookies);
         ytui::YouTube::shutdown();
         return res.ok ? 0 : 1;
@@ -899,13 +896,12 @@ int main(int argc, char* argv[]) {
     app.set_player_options(player_opts);
     app.set_graphics_mode(gfx_mode);   // no-op when --gfx wasn't passed
     app.set_ui_mode(ui_mode);          // no-op when --mode wasn't passed
-    g_app = &app;
 
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
 
     int ret = app.run();
-    g_app = nullptr;
+    app.force_cleanup(); // join App workers before shutting down shared services
 
     // ── Orderly teardown ──────────────────────────────────────────────────
     // Stop the prefetch worker and join the update-check thread so no thread

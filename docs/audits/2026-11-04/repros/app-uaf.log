@@ -1,0 +1,66 @@
+=================================================================
+==1334==ERROR: AddressSanitizer: heap-use-after-free on address 0x51e000000a48 at pc 0x5abd9c4ee126 bp 0x71deb2ffd6c0 sp 0x71deb2ffd6b0
+READ of size 8 at 0x51e000000a48 thread T1
+    #0 0x5abd9c4ee125  (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x27125) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+    #1 0x71deb5eecdb3  (/lib/x86_64-linux-gnu/libstdc++.so.6+0xecdb3) (BuildId: 753c6c8608b61d4e67be8f0c890e03e0aa046b8b)
+    #2 0x71deb685ea41  (/lib/x86_64-linux-gnu/libasan.so.8+0x5ea41) (BuildId: 0241d5a774aeb1d6babd9f68d743bdcf31b4a97d)
+    #3 0x71deb5a9cb83  (/lib/x86_64-linux-gnu/libc.so.6+0x9cb83) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)
+    #4 0x71deb5b29ecb  (/lib/x86_64-linux-gnu/libc.so.6+0x129ecb) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)
+
+0x51e000000a48 is located 2504 bytes inside of 2664-byte region [0x51e000000080,0x51e000000ae8)
+freed by thread T0 here:
+    #0 0x71deb68ff5e8  (/lib/x86_64-linux-gnu/libasan.so.8+0xff5e8) (BuildId: 0241d5a774aeb1d6babd9f68d743bdcf31b4a97d)
+    #1 0x5abd9c4e8704  (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x21704) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+    #2 0x71deb5a2a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)
+    #3 0x71deb5a2a28a  (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)
+    #4 0x5abd9c4e73c4  (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x203c4) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+
+previously allocated by thread T0 here:
+    #0 0x71deb68fe548  (/lib/x86_64-linux-gnu/libasan.so.8+0xfe548) (BuildId: 0241d5a774aeb1d6babd9f68d743bdcf31b4a97d)
+    #1 0x5abd9c4e7f6f  (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x20f6f) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+    #2 0x71deb5a2a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)
+    #3 0x71deb5a2a28a  (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)
+    #4 0x5abd9c4e73c4  (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x203c4) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+
+Thread T1 created by T0 here:
+    #0 0x71deb68f51f9  (/lib/x86_64-linux-gnu/libasan.so.8+0xf51f9) (BuildId: 0241d5a774aeb1d6babd9f68d743bdcf31b4a97d)
+    #1 0x71deb5eeceb0  (/lib/x86_64-linux-gnu/libstdc++.so.6+0xeceb0) (BuildId: 753c6c8608b61d4e67be8f0c890e03e0aa046b8b)
+    #2 0x5abd9c4ec745  (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x25745) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+    #3 0x5abd9c4e8091  (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x21091) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+    #4 0x71deb5a2a1c9  (/lib/x86_64-linux-gnu/libc.so.6+0x2a1c9) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)
+    #5 0x71deb5a2a28a  (/lib/x86_64-linux-gnu/libc.so.6+0x2a28a) (BuildId: a4a7992a8e66555c8141ab2a08a8465ff6e0ea65)
+    #6 0x5abd9c4e73c4  (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x203c4) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+
+SUMMARY: AddressSanitizer: heap-use-after-free (/mnt/c/Users/abina/Documents/Codex/2026-11-03/git-x20-2/work/audit-harness/app_uaf_probe+0x27125) (BuildId: fc43585b3cfac6c4b9f665ed1de41771ce4ba58d)
+Shadow bytes around the buggy address:
+  0x51e000000780: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x51e000000800: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x51e000000880: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x51e000000900: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+  0x51e000000980: fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd fd
+=>0x51e000000a00: fd fd fd fd fd fd fd fd fd[fd]fd fd fd fd fd fd
+  0x51e000000a80: fd fd fd fd fd fd fd fd fd fd fd fd fd fa fa fa
+  0x51e000000b00: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x51e000000b80: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x51e000000c00: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+  0x51e000000c80: fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa fa
+Shadow byte legend (one shadow byte represents 8 application bytes):
+  Addressable:           00
+  Partially addressable: 01 02 03 04 05 06 07
+  Heap left redzone:       fa
+  Freed heap region:       fd
+  Stack left redzone:      f1
+  Stack mid redzone:       f2
+  Stack right redzone:     f3
+  Stack after return:      f5
+  Stack use after scope:   f8
+  Global redzone:          f9
+  Global init order:       f6
+  Poisoned by user:        f7
+  Container overflow:      fc
+  Array cookie:            ac
+  Intra object redzone:    bb
+  ASan internal:           fe
+  Left alloca redzone:     ca
+  Right alloca redzone:    cb
+==1334==ABORTING

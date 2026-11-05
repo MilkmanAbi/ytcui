@@ -111,6 +111,24 @@ struct StreamFormat {
     }
 };
 
+// Accepts a bare id, a watch URL, youtu.be, shorts, embed, or a live URL.
+// Lives here rather than in a CLI translation unit because ytcui-dl session needs the
+// same parsing and two copies of it would drift.
+inline std::string extract_video_id(const std::string& s) {
+    if (s.size() == 11 && s.find('/') == std::string::npos &&
+        s.find('.') == std::string::npos) return s;
+    static const char* keys[] = {"v=", "/shorts/", "/embed/", "/live/", "youtu.be/"};
+    for (const char* k : keys) {
+        size_t p = s.find(k);
+        if (p == std::string::npos) continue;
+        p += std::strlen(k);
+        size_t e = s.find_first_of("&?/#", p);
+        std::string id = s.substr(p, e == std::string::npos ? std::string::npos : e - p);
+        if (id.size() >= 11) return id.substr(0, 11);
+    }
+    return s;
+}
+
 struct ThumbnailInfo {
     std::string url;
     int width  = 0;
@@ -130,7 +148,19 @@ struct VideoInfo {
     int         duration_secs = 0;
     int64_t     view_count    = 0;
     std::string view_count_str;
-    bool        is_live       = false;
+    bool        is_live       = false;   // videoDetails.isLiveContent
+    // Live *right now*, from videoDetails.isLive. Kept separate from is_live
+    // on purpose: isLiveContent stays true for the VOD a finished stream
+    // leaves behind, and those play back as ordinary progressive files with a
+    // contentLength like anything else. Only this flag means "there is no
+    // byte-addressable file here".
+    bool        is_live_now   = false;
+    // streamingData.hlsManifestUrl, when the resolving client offered one.
+    // Two jobs: it is the only transport a live stream actually has, and it is
+    // the one fallback that still plays a whole VOD when the resolving
+    // client's progressive URLs are byte-capped. mpv and ffmpeg both read HLS
+    // natively, so this is handed over as-is -- never fetched by this project.
+    std::string hls_url;
     std::string url;
     std::string category;
     std::vector<StreamFormat> formats;

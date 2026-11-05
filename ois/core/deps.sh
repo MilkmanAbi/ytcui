@@ -26,18 +26,28 @@
 # -- Alias table -------------------------------------------------------
 # Columns (1-indexed):
 #   1:pc  2:header  3:apt  4:pacman  5:dnf  6:zypper  7:apk  8:xbps
-#   9:emerge  10:brew  11:pkg  12:pkgin  13:pkg_add  14:macports
+#   9:emerge  10:brew  11:pkg  12:pkgin  13:pkg_add  14:macports  15:termux
+#
+# Column 15 (termux) is populated only for rows this project actually
+# depends on and has verified against real Termux package names -- Termux
+# reuses apt/dpkg mechanically (so OIS_PM stays "apt" there) but its
+# packages are named differently: no -dev split, headers ship in the same
+# package as the library (e.g. "ncurses" not "libncurses-dev", "libcurl"
+# not "libcurl4-openssl-dev"). Rows without a 15th field safely fall back
+# to the bare dependency name (see ois_dep_package), which happens to be
+# correct for many Termux packages too, just unverified here.
 _ois_alias_row() {
     case "$1" in
-    ncurses)    printf '%s' 'ncursesw|ncurses.h|libncurses-dev|ncurses|ncurses-devel|ncurses-devel|ncurses-dev|ncurses-devel|sys-libs/ncurses|ncurses|ncurses|ncurses|-|ncurses' ;;
+    ncurses)    printf '%s' 'ncursesw|ncurses.h|libncurses-dev|ncurses|ncurses-devel|ncurses-devel|ncurses-dev|ncurses-devel|sys-libs/ncurses|ncurses|ncurses|ncurses|-|ncurses|ncurses' ;;
+    openssl)    printf '%s' 'openssl|openssl/ssl.h|libssl-dev|openssl|openssl-devel|libopenssl-devel|openssl-dev|openssl-devel|dev-libs/openssl|openssl@3|openssl|openssl|-|openssl|openssl' ;;
+    curl)       printf '%s' 'libcurl|curl/curl.h|libcurl4-openssl-dev|curl|libcurl-devel|libcurl-devel|curl-dev|libcurl-devel|net-misc/curl|curl|curl|curl|curl|curl|libcurl' ;;
+    mpv)        printf '%s' 'mpv|mpv/client.h|libmpv-dev|mpv|mpv-devel|mpv-devel|mpv-dev|mpv-devel|media-video/mpv|mpv|mpv|mpv|-|mpv|mpv' ;;
     readline)   printf '%s' 'readline|readline/readline.h|libreadline-dev|readline|readline-devel|readline-devel|readline-dev|readline-devel|sys-libs/readline|readline|readline|readline|-|readline' ;;
-    openssl)    printf '%s' 'openssl|openssl/ssl.h|libssl-dev|openssl|openssl-devel|libopenssl-devel|openssl-dev|openssl-devel|dev-libs/openssl|openssl@3|openssl|openssl|-|openssl' ;;
     zlib)       printf '%s' 'zlib|zlib.h|zlib1g-dev|zlib|zlib-devel|zlib-devel|zlib-dev|zlib-devel|sys-libs/zlib|zlib|-|zlib|-|zlib' ;;
     bzip2)      printf '%s' 'bzip2|bzlib.h|libbz2-dev|bzip2|bzip2-devel|libbz2-devel|bzip2-dev|bzip2-devel|app-arch/bzip2|bzip2|bzip2|bzip2|bzip2|bzip2' ;;
     xz)         printf '%s' 'liblzma|lzma.h|liblzma-dev|xz|xz-devel|xz-devel|xz-dev|liblzma-devel|app-arch/xz-utils|xz|xz|xz|xz|xz' ;;
     zstd)       printf '%s' 'libzstd|zstd.h|libzstd-dev|zstd|libzstd-devel|libzstd-devel|zstd-dev|libzstd-devel|app-arch/zstd|zstd|zstd|zstd|zstd|zstd' ;;
     sqlite3)    printf '%s' 'sqlite3|sqlite3.h|libsqlite3-dev|sqlite|sqlite-devel|sqlite3-devel|sqlite-dev|sqlite-devel|dev-db/sqlite|sqlite|sqlite3|sqlite3|sqlite3|sqlite3' ;;
-    curl)       printf '%s' 'libcurl|curl/curl.h|libcurl4-openssl-dev|curl|libcurl-devel|libcurl-devel|curl-dev|libcurl-devel|net-misc/curl|curl|curl|curl|curl|curl' ;;
     pcre2)      printf '%s' 'libpcre2-8|pcre2.h|libpcre2-dev|pcre2|pcre2-devel|pcre2-devel|pcre2-dev|pcre2-devel|dev-libs/libpcre2|pcre2|pcre2|pcre2|pcre2|pcre2' ;;
     libxml2)    printf '%s' 'libxml-2.0|libxml/parser.h|libxml2-dev|libxml2|libxml2-devel|libxml2-devel|libxml2-dev|libxml2-devel|dev-libs/libxml2|libxml2|libxml2|libxml2|libxml|libxml2' ;;
     libgit2)    printf '%s' 'libgit2|git2.h|libgit2-dev|libgit2|libgit2-devel|libgit2-devel|libgit2-dev|libgit2-devel|dev-libs/libgit2|libgit2|libgit2|libgit2|libgit2|libgit2' ;;
@@ -65,7 +75,6 @@ _ois_alias_row() {
     protobuf)   printf '%s' 'protobuf|google/protobuf/message.h|libprotobuf-dev|protobuf|protobuf-devel|protobuf-devel|protobuf-dev|protobuf-devel|dev-libs/protobuf|protobuf|protobuf|protobuf|protobuf|protobuf' ;;
     fmt)        printf '%s' 'fmt|fmt/core.h|libfmt-dev|fmt|fmt-devel|fmt-devel|fmt-dev|fmt-devel|dev-libs/libfmt|fmt|fmt|-|-|fmt' ;;
     boost)      printf '%s' '-|boost/version.hpp|libboost-all-dev|boost|boost-devel|libboost_headers-devel|boost-dev|boost-devel|dev-libs/boost|boost|boost-libs|boost|boost|boost' ;;
-    mpv)        printf '%s' 'mpv|mpv/client.h|libmpv-dev|mpv|mpv-devel|mpv-devel|mpv-dev|mpv-devel|media-video/mpv|mpv|mpv|mpv|-|mpv' ;;
     # -- tools (probed with command -v) --------------------------------
     git)        printf '%s' '-|-|git|git|git|git|git|git|dev-vcs/git|git|git|git|git|git' ;;
     cmake)      printf '%s' '-|-|cmake|cmake|cmake|cmake|cmake|cmake|dev-build/cmake|cmake|cmake|cmake|cmake|cmake' ;;
@@ -82,6 +91,7 @@ _ois_alias_row() {
 }
 
 _ois_alias_col() {
+    if [ "${OIS_IS_TERMUX:-no}" = "yes" ]; then printf '%s' '15'; return 0; fi
     case "$OIS_PM" in
         apt)          printf '%s' '3'  ;; pacman)   printf '%s' '4'  ;;
         dnf|yum)      printf '%s' '5'  ;; zypper)   printf '%s' '6'  ;;
@@ -96,10 +106,10 @@ _ois_alias_col() {
 _ois_row_field() {
     _rf_r="$1" ; _rf_n="$2" ; _rf_i=1
     while [ "$_rf_i" -lt "$_rf_n" ]; do
-        case "$_rf_r" in *\|*) _rf_r="${_rf_r#*|}" ;; *) printf ''; return 1 ;; esac
+        case "$_rf_r" in *\|*) _rf_r="${_rf_r#*"|"}" ;; *) printf ''; return 1 ;; esac
         _rf_i=$(( _rf_i + 1 ))
     done
-    _rf_v="${_rf_r%%|*}"
+    _rf_v="${_rf_r%%"|"*}"
     [ "$_rf_v" = "-" ] && { printf ''; return 1; }
     printf '%s' "$_rf_v"
 }
@@ -190,6 +200,7 @@ ois_dep_names() {
 # -- Package-name resolution -------------------------------------------
 ois_dep_package() {
     _dpk_n="$1"
+    [ "${OIS_IS_TERMUX:-no}" = "yes" ] && { ois_dep_attr "$_dpk_n" termux && return 0; }  # explicit termux override
     ois_dep_attr "$_dpk_n" "$OIS_PM" && return 0     # explicit per-PM override
     ois_dep_attr "$_dpk_n" pkg       && return 0     # explicit default
     ois_alias_pkg "$_dpk_n"          && return 0     # alias table
@@ -636,7 +647,11 @@ ois_deps_check() {
     printf '     %s%s\n\n' "$_dc_disp_pfx" "$_dc_cmd"
 
     # If we genuinely cannot elevate for a PM that needs it, stop early.
-    if [ "$OIS_PM" != "brew" ] && [ "$OIS_IS_ROOT" != "yes" ] && [ "$OIS_SUDO" = "none" ]; then
+    # Termux is the one apt system that never needs elevation at all -- its
+    # apt/dpkg installs unprivileged into its own private $PREFIX, so a
+    # missing sudo/doas there is normal, not a blocker.
+    if [ "${OIS_IS_TERMUX:-no}" != "yes" ] && \
+       [ "$OIS_PM" != "brew" ] && [ "$OIS_IS_ROOT" != "yes" ] && [ "$OIS_SUDO" = "none" ]; then
         ois_fail E-PERM "dependencies need installing but no sudo/doas is available" \
             "OIS cannot elevate to run the package manager" \
             "run this yourself, then re-run OIS:" \

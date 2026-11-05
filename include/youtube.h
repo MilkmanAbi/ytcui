@@ -20,9 +20,15 @@ public:
     YouTube();
     ~YouTube();
 
-    // Search YouTube, returns list of video results
+    // Search YouTube, returns list of video results.
+    // sort_by: "relevance" (default), "date", "view_count", "rating"
+    // filter_type: "" (all), "video", "channel", "playlist"
+    // filter_dur: "" (any), "short" (<4 min), "long" (>20 min)
     std::vector<Video> search(const std::string& query, int max_results = 15,
-                               const std::string& cookie_args = "");
+                               const std::string& cookie_args = "",
+                               const std::string& sort_by = "",
+                               const std::string& filter_type = "",
+                               const std::string& filter_dur = "");
 
     // Get the direct stream URL for a video
     std::string get_stream_url(const std::string& video_id, bool audio_only = false);
@@ -36,6 +42,7 @@ public:
     // Stop any background work (prefetch worker) before process teardown.
     // Safe to call on either backend; a no-op for the yt-dlp backend.
     static void shutdown();
+    static bool configure_cookies(const std::string& path);
 
     // Download both an MP4 (best available video+audio, muxed) and an MP3
     // (audio only) for a video into out_dir. BLOCKING — this does real

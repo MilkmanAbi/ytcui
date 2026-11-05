@@ -2,6 +2,8 @@
 
 #include "types.h"
 #include <string>
+#include <vector>
+#include <utility>
 #include <sys/types.h>
 #include "mpv_ipc.h"
 
@@ -14,6 +16,13 @@ struct PlayerOptions {
     bool no_cache          = false;  // --no-cache: disables mpv demuxer cache (debug)
     bool verbose_mpv       = false;  // --mpv-verbose: don't silence mpv terminal output
     int  volume            = 80;     // default volume (--volume)
+    int  preferred_height  = 0;      // 0 = best available; set from config_.preferred_height
+    BackendKind backend    = BackendKind::YtcuiDl;  // runtime backend for every playback mode
+    bool backend_auto_failover = true;
+    std::string ytdlp_path = "yt-dlp";
+    std::string mpv_path = "mpv";
+    std::string browser;
+    std::string cookies_file;        // path to cookies file for ytcui-we backend
 };
 
 class Player {
@@ -23,6 +32,7 @@ public:
 
     // Apply session options (call before first play())
     void set_options(const PlayerOptions& opts) { opts_ = opts; }
+    const PlayerOptions& get_options() const { return opts_; }
 
     void play(const std::string& url, const std::string& title, PlayMode mode);
     void stop();
@@ -53,6 +63,10 @@ public:
 
     static bool is_available();
 
+    // Returns {height, label} pairs sorted high→low for the most recently
+    // resolved video. Empty if resolution failed or the current video has no video formats.
+    std::vector<std::pair<int, std::string>> resolution_rungs() const;
+
 private:
     pid_t mpv_pid_ = -1;
     std::string current_title_;
@@ -62,10 +76,11 @@ private:
 
     PlayerOptions opts_;
     MpvIPC ipc_;
+    std::vector<std::pair<int, std::string>> rungs_;
     int current_volume_ = 80;
 
     void play_piped(const std::string& url, const std::string& title, PlayMode mode);
-    void play_direct(const std::string& url, const std::string& title);
+    void play_direct(const std::string& url, const std::string& title, PlayMode mode = PlayMode::Video);
     void play_xdg(const std::string& url, const std::string& title);
     void kill_mpv();
     void close_death_pipe();

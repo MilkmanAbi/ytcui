@@ -9,6 +9,8 @@
 #include <ctime>
 #include <cstdlib>
 #include <random>
+#include <filesystem>
+#include "atomic_file.h"
 
 namespace ytui {
 
@@ -43,6 +45,7 @@ struct Playlist {
     std::vector<VideoEntry> videos;
     long long created_at = 0;
     long long updated_at = 0;
+    int color_tag = -1;       // -1=none, 0-6=rainbow (red,orange,yellow,green,blue,purple,pink)
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -51,6 +54,7 @@ struct Playlist {
 
 class Library {
 public:
+    std::string take_save_error() { auto error = save_error_; save_error_.clear(); return error; }
     void load() {
         ensure_dir();
         load_bookmarks(data_dir() + "/library.json");
@@ -59,6 +63,7 @@ public:
     }
 
     void save() const {
+        save_error_.clear();
         ensure_dir();
         save_bookmarks(data_dir() + "/library.json");
         save_history(data_dir() + "/history.json");
@@ -293,7 +298,16 @@ public:
         return std::string(home ? home : "/tmp") + "/.local/share/ytcui";
     }
 
+    // Cycle playlist color tag: -1 (none) → 0 (red) → … → 6 (pink) → -1
+    void toggle_playlist_color(const std::string& id) {
+        Playlist* pl = get_playlist_mut(id);
+        if (!pl) return;
+        pl->color_tag = (pl->color_tag >= 6) ? -1 : pl->color_tag + 1;
+        save_playlists(data_dir() + "/playlists.json");
+    }
+
 private:
+    mutable std::string save_error_;
     std::vector<BookmarkEntry> bookmarks_;
     std::vector<VideoEntry> history_;
     std::vector<Playlist> playlists_;
@@ -317,8 +331,8 @@ private:
 
     static void ensure_dir() {
         std::string dir = data_dir();
-        std::string cmd = "mkdir -p '" + dir + "' 2>/dev/null";
-        int r = system(cmd.c_str()); (void)r;
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
     }
 
     // ─── Load/Save ──────────────────────────────────────────────────────────────
@@ -343,15 +357,13 @@ private:
     }
 
     void save_bookmarks(const std::string& path) const {
-        std::ofstream f(path);
-        if (!f.is_open()) return;
         json j = json::array();
         for (const auto& e : bookmarks_) {
             j.push_back({{"id", e.id}, {"title", e.title}, {"channel", e.channel},
                          {"channel_id", e.channel_id}, {"type", e.type},
                          {"timestamp", e.timestamp}});
         }
-        f << j.dump(2);
+        atomic_write(path, j.dump(2), &save_error_);
     }
 
     void load_history(const std::string& path) {
@@ -375,15 +387,13 @@ private:
     }
 
     void save_history(const std::string& path) const {
-        std::ofstream f(path);
-        if (!f.is_open()) return;
         json j = json::array();
         for (const auto& v : history_) {
             j.push_back({{"id", v.id}, {"title", v.title}, {"channel", v.channel},
                          {"channel_id", v.channel_id}, {"thumbnail_url", v.thumbnail_url},
                          {"duration_seconds", v.duration_seconds}, {"timestamp", v.timestamp}});
         }
-        f << j.dump(2);
+        atomic_write(path, j.dump(2), &save_error_);
     }
 
     void load_playlists(const std::string& path) {
@@ -398,6 +408,7 @@ private:
                 pl.name = item.value("name", "");
                 pl.created_at = item.value("created_at", 0LL);
                 pl.updated_at = item.value("updated_at", 0LL);
+                pl.color_tag  = item.value("color_tag", -1);
                 
                 if (item.contains("videos") && item["videos"].is_array()) {
                     for (const auto& vi : item["videos"]) {
@@ -418,8 +429,6 @@ private:
     }
 
     void save_playlists(const std::string& path) const {
-        std::ofstream f(path);
-        if (!f.is_open()) return;
         json j = json::array();
         for (const auto& pl : playlists_) {
             json videos = json::array();
@@ -429,9 +438,10 @@ private:
                                   {"duration_seconds", v.duration_seconds}, {"timestamp", v.timestamp}});
             }
             j.push_back({{"id", pl.id}, {"name", pl.name}, {"videos", videos},
-                         {"created_at", pl.created_at}, {"updated_at", pl.updated_at}});
+                         {"created_at", pl.created_at}, {"updated_at", pl.updated_at},
+                         {"color_tag", pl.color_tag}});
         }
-        f << j.dump(2);
+        atomic_write(path, j.dump(2), &save_error_);
     }
 };
 

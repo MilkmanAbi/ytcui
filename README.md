@@ -1,25 +1,121 @@
-# ytcui 4.1.0 (=^･ω･^=)
-
-> **Due to YouTube changes once again, ytcui-dl is broken. use the yt-dlp backend when installing!!**
-
-> **Upgrades coming soon!!** 
+# ytcui 5.0.4 (=^･ω･^=)
 
 A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
 
-Built in C++ with ncurses. Plays via mpv, fetches via **ytcui-dl** (built-in, experimental YouTube client of mine) or the mature **yt-dlp**.
+Built in C++17 with ncurses. Plays via mpv, fetches via **ytcui-dl** (built-in, experimental YouTube client of mine), **ytcui-we**, or the mature **yt-dlp**.
 
-<img src="Pictures/ytcui-new.png" alt="ytcui screenshot">
-
-> ytcui running in Windows Terminal under WSL. >_<
+<p align="center">
+  <img src="Pictures/00-search-results.png" alt="ytcui v5 search results alongside the selected video's thumbnail, channel, duration and view count" width="1100">
+  <br>
+  <em>ytcui running in Windows Terminal under WSL. >_<</em>
+</p>
 
 ---
 
+## Gallery
+
+<details>
+<summary><strong>Search · sorting and filters</strong></summary>
+
 <p align="center">
-  <img src="Pictures/ytcui-streamlined.png" alt="ytcui screenshot 1" width="359">
-  <img src="Pictures/ytcui-streamlined-3.png" alt="ytcui screenshot 3" width="359">
+  <img src="Pictures/01-sort-and-filter.png" alt="Sorting and filtering options over the search results" width="1100">
+  <br>
+  <em>Sort by relevance, upload date, view count or rating, and filter the type or length of results.</em>
 </p>
 
-> ytcui in streamlined view >_O
+</details>
+
+<details>
+<summary><strong>Your collection · library, playlists, feed and history</strong></summary>
+
+<p align="center">
+  <img src="Pictures/02-library.png" alt="Library with subscriptions and saved videos" width="1100">
+  <br>
+  <em>Library keeps channel subscriptions and saved videos together.</em>
+</p>
+
+<p align="center">
+  <img src="Pictures/03-playlists.png" alt="Local playlists with their video counts" width="1100">
+  <br>
+  <em>Create and browse local playlists, see video counts, and assign playlist colours.</em>
+</p>
+
+<p align="center">
+  <img src="Pictures/04-feed.png" alt="Feed with recently played videos and subscribed channels" width="1100">
+  <br>
+  <em>Feed puts recently played videos beside your subscribed channels.</em>
+</p>
+
+<p align="center">
+  <img src="Pictures/05-watch-history.png" alt="Watch history showing video titles and channel names" width="1100">
+  <br>
+  <em>Revisit watch history; selecting an entry searches for it and returns to results.</em>
+</p>
+
+</details>
+
+<details>
+<summary><strong>Make it yours · themes, keybindings and general settings</strong></summary>
+
+<p align="center">
+  <img src="Pictures/06-settings-themes.png" alt="Settings Theme tab with the available colour themes" width="1100">
+  <br>
+  <em>Change themes live from Settings, without restarting.</em>
+</p>
+
+<p align="center">
+  <img src="Pictures/07-settings-keybindings.png" alt="Settings Accelerators tab with configurable playback and navigation keys" width="1100">
+  <br>
+  <em>Rebind playback and navigation keys in the Accelerators tab.</em>
+</p>
+
+<p align="center">
+  <img src="Pictures/08-settings-general.png" alt="General settings for backend, UI mode, SponsorBlock, resume and looping" width="1100">
+  <br>
+  <em>Choose a backend or interface mode and configure SponsorBlock, resume, looping and interface hints.</em>
+</p>
+
+</details>
+
+<details>
+<summary><strong>Playback tools · sleep timer and QR sharing</strong></summary>
+
+<p align="center">
+  <img src="Pictures/09-settings-timer.png" alt="Settings Timer tab with sleep timer and loop on end options" width="1100">
+  <br>
+  <em>Manage the sleep timer and loop-on-end option from Settings.</em>
+</p>
+
+<p align="center">
+  <img src="Pictures/10-sleep-timer.png" alt="Sleep timer dialog accepting durations such as 30m, 1h23m and 45s" width="1100">
+  <br>
+  <em>Set a sleep timer using a duration such as 30m, 1h23m or 45s.</em>
+</p>
+
+<p align="center">
+  <img src="Pictures/11-qr-sharing.png" alt="Share dialog with a complete QR code, video URL and copy command" width="1100">
+  <br>
+  <em>Scan the QR code or press c to copy the URL; m switches between cell and compact rendering.</em>
+</p>
+
+</details>
+
+<details>
+<summary><strong>Small terminals · streamlined mode</strong></summary>
+
+<p align="center">
+  <img src="Pictures/12-streamlined-menu.png" alt="Narrow streamlined menu with Search, Library, Playlists, Feed and History" width="440">
+  <br>
+  <em>The streamlined section menu keeps navigation available in a narrow terminal.</em>
+</p>
+
+<p align="center">
+  <img src="Pictures/13-streamlined-search.png" alt="Streamlined search screen with a focused input field and keyboard hints" width="440">
+  <br>
+  <em>Compact search: type a query, press Enter, or Escape to return.</em>
+</p>
+
+</details>
 
 ---
 
@@ -55,72 +151,45 @@ ytcui --install-info   # full install details + dependency status
 
 ---
 
-## What's new in 4.0.0
+## What's new in v5
+
+### Three backends, no rebuild
+
+**Ctrl-B** cycles through **ytcui-dl → ytcui-we → yt-dlp**. You can also choose a backend in **Ctrl-S → General**. ytcui-dl is built in; ytcui-we ships as a companion executable; yt-dlp is an optional external backend.
 
 ### Playback
 
-**Instant pause/resume.** The old approach froze the mpv process with `SIGSTOP`/`SIGCONT`, which drained the audio buffer and caused a 2–3 second stall on resume. 4.0.0 replaces this with mpv's JSON IPC socket: pause is now codec-level and takes effect in under a frame. `Space` or `p`, from anywhere.
+**Resolution selector.** Press `r` to open the quality ladder for a resolved video. Your preferred height is saved across launches. The choices depend on the backend and streams available for that video.
 
-**Volume and seeking.** `+`/`-` adjust volume ±5%, `<`/`>` seek ±10 seconds — all via IPC, all instant, all global. Requested in issue #4.
+**Queue.** Add videos to the queue or choose **Play next** from the action menu. `Ctrl-Q` opens the queue.
 
-**Live progress bar.** The now-playing strip shows real elapsed/total time and a filled progress bar, polled from mpv's IPC cache every frame without blocking the UI.
+**Resume and looping.** Pick up where you left off, loop the current video, or keep a playlist going. Set your preferences in **Ctrl-S → General**.
+
+**SponsorBlock.** Skip configured sponsor and other segment categories. Toggle it in Settings.
+
+Pause/resume, volume and seeking still use mpv's JSON IPC socket: `Space` or `p` pauses, `+`/`-` changes volume, and `<`/`>` seeks. The now-playing strip shows elapsed time and playback progress.
+
+### Sleep timer
+
+Press `Ctrl-T`, then enter a duration such as `30m`, `1h23m` or `45s`. `Enter` sets the timer; `Ctrl-T` cancels it. Timer options also live in Settings.
+
+### Share (QR + clipboard)
+
+Open **Share** from a video's action menu to show a QR code. Scan it on your phone, or press `c` to copy the link. `m` switches between full-cell and compact QR rendering; `Esc` closes the dialog.
 
 ### In-app settings (Ctrl-S)
 
-Press `Ctrl-S` (or `Ctrl-Shift-S`) from anywhere to open the live settings panel:
+- **Theme** — change colours live, no restart.
+- **Accelerators** — select an action and press a new key to rebind it.
+- **General** — backend, UI mode, SponsorBlock, resume, looping, status bar and hints.
+- **Timer** — sleep timer and loop-on-end options.
+- **About** — version information.
 
-- **Theme tab** — switch between all 18 themes instantly, no restart.
-- **Accelerators tab** — highlight any action and press a new key to rebind it on the fly. Changes save to `config.json` and take effect immediately.
+Changes save to `config.json`. Press `?` for the shortcuts reference.
 
-Keybindings can also be set directly in `config.json` under a `"keys"` block:
+### Terminal handling
 
-```json
-{
-  "keys": {
-    "search":     "/",
-    "pause":      " ",
-    "volume_up":  "+",
-    "volume_down": "-",
-    "seek_fwd":   ">",
-    "seek_back":  "<",
-    "quit":       "q"
-  }
-}
-```
-
-All navigation keys (`/`, `+`, `-`, `<`, `>`, `q`, etc.) are global — they work from the results list, action menus, playlists, anywhere except the search input box itself.
-
-### Shortcuts reference (?`)
-
-Press `?` to open a full keybinding reference panel. Any key dismisses it.
-
-### Theme remembered
-
-`ytcui --theme dracula` now persists to `config.json` so your next launch keeps it without the flag. Change it live any time with Ctrl-S.
-
-### Interactive installer
-
-`sh install.sh` now asks:
-
-1. **macOS only:** Homebrew or MacPorts — your choice regardless of what's installed. OIS offers to bootstrap whichever you pick if it isn't present yet.
-2. **Backend:** ytcui-dl (built-in, no deps) or yt-dlp.
-3. **Theme:** all 18, with a one-line description each.
-4. **Hardware acceleration:** on/off for mpv. The choice persists to `config.json` so it applies on every launch.
-
-Non-interactive / `--yes` / piped installs take defaults silently.
-
-### OIS v4 — new install system
-
-The old OIS v1 is replaced with OIS v4, a complete rewrite. Changes relevant to ytcui users:
-
-- **Reinstall bug fixed.** OIS v1–v3 would reject the existing binary on a reinstall-over-built-tree with a spurious `E-BUILD` error ("build succeeded but produced no executable"). OIS v4 now correctly accepts an up-to-date binary after a clean build exit.
-- **macOS/BSD install path is now robust.** Homebrew keg-only dependencies (`ncurses`, `curl`, `openssl@3`) are detected correctly via stable `brew --prefix` opt symlinks, probed three ways (pkg-config, header search, `brew list`). `brew` is never run as root — under a `sudo` system install it de-escalates to your real user automatically. MacPorts is bootstrapped from the correct version-matched `.pkg` for your macOS version. Xcode Command Line Tools are offered when absent.
-- **Automatic PATH wiring.** On a user-scope install (`~/.local/bin`), OIS adds the binary directory to your shell's rc files (`~/.zshrc`, `~/.bash_profile`, `~/.profile`) with clearly marked OIS blocks, and removes them cleanly on uninstall. You don't need to open a new terminal to find `ytcui` right after installing.
-- **Next-best-version matching.** If an exact package version isn't available (e.g. `openssl@3.2` vs `openssl@3.3`), OIS can find and install the nearest available alternative. Enable with `next_best_version = yes` in `ois.conf`.
-- **Automatic package search.** When a dependency isn't found by name, OIS queries the package manager's search index to find the right package name for your distro (e.g. `libncurses-dev` vs `ncurses-devel` vs `ncurses5-config`).
-- **Expanded platform support:** NetBSD (pkgin), OpenBSD (pkg_add), Illumos/OmniOS (ips), and DragonFlyBSD added alongside the existing Linux, macOS, and FreeBSD support.
-- **Lockfile.** `ois.lock` records the dependency versions resolved at install time. Commit it and `ois lock --check` tells you exactly which dependency moved between machines.
-- **`ois plan` dry-run.** See exactly what OIS will do before it does it.
+Both layouts support the same settings and dialogs. UTF-8 input, narrow windows, low-colour terminals and QR rendering have had a portability pass, including full-cell QR rendering by default on macOS Terminal.app.
 
 ---
 
@@ -144,7 +213,11 @@ All playback and navigation keys are configurable via `Ctrl-S` → Accelerators,
 | `g` / `G` | Jump to top / bottom of results |
 | `q` | Quit |
 | `?` | Shortcuts reference panel |
-| `Ctrl-S` | In-app settings (live theme + key rebinding) |
+| `Ctrl-S` | In-app settings |
+| `Ctrl-B` | Cycle backend: ytcui-dl → ytcui-we → yt-dlp |
+| `Ctrl-Q` | Open / close the queue |
+| `Ctrl-T` | Sleep timer |
+| `r` | Resolution selector |
 
 Mouse works everywhere — click tabs, result rows, action items, scroll wheel navigates.
 
@@ -246,25 +319,19 @@ Run `ytcui --colors` for the full element reference and a 256-colour chart link.
 
 ---
 
-## Backend: ytcui-dl vs yt-dlp
+## Backends
 
-ytcui ships with two backends, chosen at install time (switchable by rebuilding):
+Switch any time with `Ctrl-B` or **Ctrl-S → General**. No rebuild needed.
 
-| | ytcui-dl | yt-dlp |
-|---|---|---|
-| **Speed** | Near-instant | 2–5s per video |
-| **Dependencies** | None (built-in) | Python + yt-dlp |
-| **How it works** | InnerTube API (YouTube mobile) | JS player extraction |
-| **Stability** | Experimental | Battle-tested |
-| **Recommended** | Yes | If ytcui-dl breaks |
+| Backend | How it works | What you need |
+|---------|--------------|---------------|
+| **ytcui-dl** | Native C++ YouTube extraction; the default | Built in |
+| **ytcui-we** | C++ resolver with player-script and session support | Companion executable and a supported JavaScript runtime |
+| **yt-dlp** | External YouTube extractor | Install yt-dlp separately |
 
-The backend is baked in at compile time. Rebuild to switch:
-```bash
-make BACKEND=ytcuidl   # default
-make BACKEND=ytdlp
-```
+ytcui-we resolves streams through its own executable, and mpv handles playback. The companion is built and installed alongside ytcui. Run `ytcui-we --check-runtime` to check its JavaScript runtime.
 
-> **Note:** ytcui-dl is actively developed. Video quality support up to 2K/4K is in progress, and audio bitrate will increase from 128 kbps to 160 kbps in a future release.
+Browser-cookie login is available from the action menu. YouTube changes can affect extraction; if a video fails, try another backend and keep yt-dlp up to date.
 
 ---
 
@@ -307,26 +374,47 @@ Data lives in:
 ## Building manually
 
 ```bash
-make BACKEND=ytcuidl   # build with ytcui-dl (default)
-make BACKEND=ytdlp     # build with yt-dlp
-make SIXEL=libsixel    # optional: in-process sixel thumbnails via libsixel
-make clean             # clean
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 2
+./build/ytcui
+
+# Install ytcui, the ytcui-we companion and its player-script assets:
+cmake --install build --prefix "$HOME/.local"
 ```
+
+The Makefile wraps CMake, so `make`, `make clean` and `make tests` are also available. On macOS it supplies Homebrew dependency paths automatically.
 
 **Dependencies by platform:**
 
-| Platform | Build deps | Runtime |
-|----------|-----------|---------|
-| Linux | `g++`, `make`, `libncursesw-dev`, `libssl-dev`, `zlib1g-dev` | `mpv`, `chafa`, `curl`, `ffmpeg` |
-| macOS | Xcode CLT, Homebrew/MacPorts `ncurses`, `openssl@3`, `zlib` | `mpv`, `chafa`, `curl`, `ffmpeg` |
-| FreeBSD | `clang++`, `gmake`, `ncurses`, `openssl`, `zlib` | `mpv`, `chafa`, `curl`, `ffmpeg` |
+| Platform | Build deps | Playback |
+|----------|------------|----------|
+| Linux / WSL | C++17 compiler, CMake 3.16+, ncursesw, OpenSSL, zlib, libcurl development packages | mpv |
+| macOS | Xcode CLT, CMake, Homebrew/MacPorts ncurses, OpenSSL, zlib, curl | mpv |
+| BSDs | C++17 compiler, CMake, ncurses, OpenSSL, zlib, curl | mpv |
 
-ytcui-dl v2 does its own TLS/socket I/O, so `curl` is no longer a build
-dependency — it's an optional runtime tool (startup update-check, thumbnail
-fetching) on any backend. `ffmpeg` is optional too, needed only for the
-"Download (MP4 + MP3)" action.
+On Debian/Ubuntu:
 
-`nlohmann/json` is bundled — no separate install needed.
+```bash
+sudo apt-get install build-essential cmake pkg-config \
+  libncursesw5-dev libssl-dev zlib1g-dev libcurl4-openssl-dev mpv
+```
+
+On macOS with Homebrew:
+
+```bash
+brew install cmake ninja pkg-config ncurses openssl zlib curl mpv
+make
+```
+
+`chafa` is optional for thumbnails. `ffmpeg` is optional for download conversion and muxing. Install `yt-dlp` to use the external backend.
+
+`nlohmann/json` and the QR encoder are bundled — no separate install needed. Keep the `build/vendor/ejs/` assets with a local build, or use the install command above.
+
+To run the tests:
+
+```bash
+ctest --test-dir build --output-on-failure
+```
 
 ---
 
@@ -351,7 +439,13 @@ eval "$(/usr/local/bin/brew shellenv)"      # Intel
 
 **Debug mode** — run `ytcui --debug --logdump` to capture detailed logs.
 
-**Escape garbage in the status bar** — this was a 4.0.0 bug (mouse position events leaking as text at the faster input poll rate) fixed in 4.0.0's final release. If you see it, make sure you have the latest build.
+**QR does not fit** — enlarge the terminal or press `m` in the share dialog for compact rendering. Press `c` to copy the link instead. Terminal.app uses full-cell rendering by default; compact blocks depend on your font and character-width settings.
+
+---
+
+## Acknowledgements
+
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) is the external fallback backend and a major reference for the YouTube extraction work. Playback uses [mpv](https://mpv.io/), and QR encoding uses [Nayuki’s QR Code generator](https://www.nayuki.io/page/qr-code-generator-library). Bundled components retain their own license notices.
 
 ---
 
@@ -371,6 +465,7 @@ MIT
 
 - [ytcui](https://github.com/MilkmanAbi/ytcui)
 - [ytcui-dl](https://github.com/MilkmanAbi/ytcui-dl)
+- [ytcui-we](https://github.com/MilkmanAbi/ytcui-we)
 - [ytcui-termux](https://github.com/MilkmanAbi/ytcui-termux)
 - [ytcui-dotmatrix](https://github.com/MilkmanAbi/ytcui-dotmatrix)
 - [OIS](https://github.com/MilkmanAbi/oneinstallsystem)

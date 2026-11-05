@@ -4,6 +4,8 @@
 #include <curses.h>
 #include <string>
 #include <vector>
+#include <termios.h>
+#include "core/share.h"
 
 namespace ytui {
 
@@ -21,7 +23,15 @@ public:
     static std::string utf8_truncate(const std::string& s, int max_cols);
 
 private:
+    friend struct TuiTestAccess;
     bool initialized_ = false;
+    SCREEN* screen_ = nullptr;
+    termios original_termios_{};
+    bool have_termios_ = false;
+    short default_bg_ = -1;
+    bool qr_colors_ = false;
+    std::string qr_url_;
+    ytcui::share::QrMatrix qr_matrix_;
     bool thumb_color_ready_ = false; // true when thumbnail colour pairs are usable
     int  thumb_pairs_ = 0;           // # of usable thumb pairs (256 = full fidelity,
                                      // fewer on old/limited ncurses; 0 = monochrome)
@@ -64,8 +74,12 @@ private:
     struct Border { const char *h, *v, *tl, *tr, *bl, *br; };
     Border bd_ {"-", "|", "+", "+", "+", "+"};
     // Draw a horizontal run of w border cells starting at (y, x).
-    void hline_g(int y, int x, int w) { for (int i = 0; i < w; i++) mvaddstr(y, x + i, bd_.h); }
+    void hline_g(int y, int x, int w) { for (int i = 0; i < w; i++) put_at(y, x + i, bd_.h); }
 
+    static int put_at(int y, int x, const char* text);
+    static int print_at(int y, int x, const char* format, ...);
+    static int print_here(const char* format, ...);
+    void clear_graphics();
     void setup_colors(const AppState& state);
     void init_thumb_colors();
 
@@ -74,6 +88,7 @@ private:
     // All output goes through ncurses — erase() clears it cleanly.
     void draw_thumb(const std::string& video_id,
                     int x, int y, int cols, int rows, int bot);
+    void draw_overlays(const AppState& state);
     void draw_header(const AppState& state);
     void draw_search_box(const AppState& state);
     void draw_tabs(const AppState& state);
@@ -88,6 +103,10 @@ private:
     void draw_browser_popup(const AppState& state);
     void draw_sort_menu(const AppState& state);
     void draw_save_prompt(const AppState& state);
+    void draw_timer_prompt(const AppState& state);
+    void draw_queue_view(const AppState& state);
+    void draw_share_menu(const AppState& state);
+    void draw_res_menu(const AppState& state);
 
     // Playlist UI
     void draw_playlists_tab(const AppState& state, const Library* lib);
@@ -104,6 +123,7 @@ private:
     void stream_search(const AppState& state);
     void stream_browse(const AppState& state);
     void stream_actions(const AppState& state);
+    void stream_more_actions(const AppState& state);
     void stream_playing(const AppState& state);
     void stream_header(const AppState& state, const std::string& title);
     void stream_status(const AppState& state);

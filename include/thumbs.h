@@ -18,7 +18,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
+#include <filesystem>
+#include <cerrno>
 #include "termcaps.h"
+#include "core/proc.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include <termios.h>
@@ -33,10 +36,9 @@
 
 namespace ytui {
 
-// Color pairs 1-16 are reserved for UI elements (Color::BG … Color::DESC).
-// Pairs 17-272 are reserved for thumbnail 256-color rendering.
-// THUMB_COLOR_BASE + N maps color index N (0-255) → pair (17+N).
-constexpr int THUMB_COLOR_BASE = 18;
+// Color pairs 1-18 are reserved for UI/selection/QR elements.
+// Thumbnail colors are mapped into the legacy slots from THUMB_COLOR_BASE to 255.
+constexpr int THUMB_COLOR_BASE = 19;
 
 // ─── Structured cell returned by render_color() ───────────────────────────────
 struct ThumbCell {
@@ -93,8 +95,12 @@ public:
         return dir;
     }
 
+    static bool valid_id(const std::string& id) {
+        return !id.empty() && id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") == std::string::npos;
+    }
+
     static std::string thumb_path(const std::string& video_id) {
-        return cache_dir() + "/" + video_id + ".jpg";
+        return valid_id(video_id) ? cache_dir() + "/" + video_id + ".jpg" : std::string{};
     }
 
     static bool is_cached(const std::string& video_id) {
@@ -109,7 +115,7 @@ public:
 
     // ── Download (async, fork+exec) ──────────────────────────────────────────
     static void download_async(const std::string& video_id, const std::string& url) {
-        if (url.empty() || video_id.empty() || is_cached(video_id)) return;
+        if (url.empty() || !valid_id(video_id) || is_cached(video_id)) return;
         mkdir_p(cache_dir());
         std::string path = thumb_path(video_id);
         std::string hq   = "https://i.ytimg.com/vi/" + video_id + "/hqdefault.jpg";
@@ -117,11 +123,19 @@ public:
         if (pid == 0) {
             int dn = open("/dev/null", O_RDWR);
             if (dn >= 0) { dup2(dn,0); dup2(dn,1); dup2(dn,2); close(dn); }
-            std::string sh =
-                "curl -sL -o '" + path + "' --max-time 8 '" + url + "' && "
-                "[ $(stat -c%s '" + path + "' 2>/dev/null || echo 0) -gt 1024 ] || "
-                "curl -sL -o '" + path + "' --max-time 8 '" + hq + "'";
-            execlp("sh", "sh", "-c", sh.c_str(), nullptr);
+            pid_t curl = fork();
+            if (curl == 0) {
+                execlp("curl", "curl", "-fsL", "--proto", "=https,http", "-o", path.c_str(),
+                       "--max-time", "8", "--", url.c_str(), nullptr);
+                _exit(127);
+            }
+            int status = 0;
+            if (curl > 0) while (waitpid(curl, &status, 0) < 0 && errno == EINTR) {}
+            struct stat st{};
+            if (curl > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+                stat(path.c_str(), &st) == 0 && st.st_size > 1024) _exit(0);
+            execlp("curl", "curl", "-fsL", "--proto", "=https,http", "-o", path.c_str(),
+                   "--max-time", "8", "--", hq.c_str(), nullptr);
             _exit(1);
         }
         (void)pid;
@@ -205,20 +219,13 @@ public:
         if (const ThumbData* hit = cache.find(key)) return *hit;
 
         std::string path = thumb_path(video_id);
-        char cmd[1024];
-        // In non-UTF-8 locales the Unicode block glyphs chafa emits by default
-        // arrive as multibyte garbage (seen on bobcat / Latin-1 mlterm), so
-        // restrict chafa to plain ASCII symbols there.
-        const char* sym = TermCaps::get().unicode ? "" : "--symbols ascii ";
-        snprintf(cmd, sizeof(cmd),
-            "chafa -s %dx%d --animate=off --colors=256 --format=symbols %s'%s' 2>/dev/null",
-            cols, rows, sym, path.c_str());
-        std::string raw;
-        FILE* pipe = popen(cmd, "r");
-        if (!pipe) return {};
-        char buf[4096];
-        while (fgets(buf, sizeof(buf), pipe)) raw += buf;
-        pclose(pipe);
+        std::vector<std::string> args{"chafa", "-s", std::to_string(cols) + "x" + std::to_string(rows),
+                                      "--animate=off", "--colors=256", "--format=symbols"};
+        if (!TermCaps::get().unicode) args.insert(args.end(), {"--symbols", "ascii"});
+        args.insert(args.end(), {"--", path});
+        auto rendered = ytcui::proc::run(args, 5000, 16u * 1024 * 1024);
+        if (!rendered.ok()) return {};
+        const auto& raw = rendered.out;
         ThumbData result = parse_ansi(raw);
         cache.put(key, result);
         return result;
@@ -233,17 +240,13 @@ public:
         if (const std::string* hit = cache.find(key)) return *hit;
 
         std::string path = thumb_path(video_id);
-        char cmd[1024];
-        const char* sym = TermCaps::get().unicode ? "" : "--symbols ascii ";
-        snprintf(cmd, sizeof(cmd),
-            "chafa -s %dx%d --animate=off --colors=none %s'%s' 2>/dev/null",
-            cols, rows, sym, path.c_str());
-        std::string result;
-        FILE* pipe = popen(cmd, "r");
-        if (!pipe) return "";
-        char buf[4096];
-        while (fgets(buf, sizeof(buf), pipe)) result += buf;
-        pclose(pipe);
+        std::vector<std::string> args{"chafa", "-s", std::to_string(cols) + "x" + std::to_string(rows),
+                                      "--animate=off", "--colors=none"};
+        if (!TermCaps::get().unicode) args.insert(args.end(), {"--symbols", "ascii"});
+        args.insert(args.end(), {"--", path});
+        auto rendered = ytcui::proc::run(args, 5000, 16u * 1024 * 1024);
+        if (!rendered.ok()) return "";
+        std::string result = std::move(rendered.out);
         cache.put(key, result);
         return result;
     }
@@ -461,21 +464,14 @@ public:
         }
         // If we learned the real cell size, pass it as --font-ratio so chafa's
         // pixel sizing matches the terminal instead of its piped-mode guess.
-        char ratio[48] = "";
+        std::vector<std::string> args{"chafa", "-s", std::to_string(cols) + "x" + std::to_string(rows),
+                                      "--animate=off", std::string("--format=") + fmt};
         if (cell_px_w() > 0 && cell_px_h() > 0)
-            snprintf(ratio, sizeof(ratio), "--font-ratio=%d/%d ", cell_px_w(), cell_px_h());
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd),
-            "chafa -s %dx%d --animate=off %s--format=%s '%s' 2>/dev/null",
-            cols, rows, ratio, fmt, path.c_str());
-        std::string out;
-        FILE* pipe = popen(cmd, "r");
-        if (!pipe) return "";
-        char buf[8192];
-        size_t got;
-        while ((got = fread(buf, 1, sizeof(buf), pipe)) > 0) out.append(buf, got);
-        pclose(pipe);
-        cache.put(key, out);
+            args.push_back("--font-ratio=" + std::to_string(cell_px_w()) + "/" + std::to_string(cell_px_h()));
+        args.insert(args.end(), {"--", path});
+        auto rendered = ytcui::proc::run(args, 5000, 16u * 1024 * 1024);
+        if (!rendered.ok()) return "";
+        auto out = std::move(rendered.out);
         return out;
     }
 
@@ -528,8 +524,8 @@ private:
 #endif
 
     static void mkdir_p(const std::string& path) {
-        std::string cmd = "mkdir -p '" + path + "'";
-        int r = system(cmd.c_str()); (void)r;
+        std::error_code ec;
+        std::filesystem::create_directories(path, ec);
     }
 };
 

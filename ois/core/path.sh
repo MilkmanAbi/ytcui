@@ -180,7 +180,14 @@ ois_path_ensure() {
     # PATH because the user already configured it themselves, don't clobber.
     _pe_added=0
     _pe_any_rc=0
-    for _pe_f in $(_ois_path_rc_files); do
+    # Keep each candidate a separate quoted word: HOME may contain spaces.
+    for _pe_f in \
+        "${OIS_HOME:-$HOME}/.zshrc" \
+        "${OIS_HOME:-$HOME}/.bashrc" \
+        "${OIS_HOME:-$HOME}/.bash_profile" \
+        "${OIS_HOME:-$HOME}/.profile"
+    do
+        [ -f "$_pe_f" ] || continue
         _pe_any_rc=1
         _ois_path_add_posix "$_pe_f" "$_pe_dir" && _pe_added=1
     done

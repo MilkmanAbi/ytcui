@@ -1,13 +1,18 @@
 #include "app.h"
+#include "termination.h"
 #include "log.h"
 #include "thumbs.h"
 #include "termcaps.h"
 #include "auth.h"
 #include "theme.h"
 #include "compat.h"
+#include "core/url.h"
+#include "core/share.h"
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <sstream>
+#include <thread>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -38,12 +43,21 @@ static const AccelRow kAccelRows[] = {
     {"Sort menu",        &Config::KeyBindings::sort},
     {"New playlist",     &Config::KeyBindings::new_playlist},
     {"Quit",             &Config::KeyBindings::quit},
+    {"Sleep timer",      &Config::KeyBindings::timer},
 };
 static const int kAccelCount = (int)(sizeof(kAccelRows)/sizeof(kAccelRows[0]));
 
 
 static inline void shell(const std::string& cmd) {
     int r = system(cmd.c_str()); (void)r;
+}
+
+static Video entry_to_video(const VideoEntry& e) {
+    Video v;
+    v.id = e.id; v.title = e.title; v.channel = e.channel;
+    v.channel_id = e.channel_id; v.thumbnail_url = e.thumbnail_url;
+    v.duration_seconds = e.duration_seconds;
+    return v;
 }
 
 static const char* greetings[] = {
@@ -63,9 +77,11 @@ static const char* greetings[] = {
 static const int NUM_GREETINGS = sizeof(greetings) / sizeof(greetings[0]);
 static const char* rgreet() { return greetings[rand() % NUM_GREETINGS]; }
 
-App::App(Theme theme) {
+App::App(Theme theme, SbFetch fetch) : sb_fetch_(std::move(fetch)) {
+    if (!sb_fetch_) sb_fetch_ = [](const auto& video, const auto& cats) { return ytcui::sb::fetch(video, cats); };
     srand(time(nullptr));
     config_.load();
+    if (!config_.cookies_file.empty()) YouTube::configure_cookies(config_.cookies_file);
 
     // Point the input handler at the live keybindings so configured / rebound
     // keys actually take effect. config_.keys stays valid for the App's life.
@@ -112,6 +128,7 @@ App::App(Theme theme) {
     apply_capability_overrides(/*authoritative=*/false);
     state_.logged_in = Auth::is_logged_in();
     state_.auth_browser = Auth::get_configured_browser();
+    state_.active_backend = config_.backend;
     Log::write("Thumbs: %s | Auth: %s | Theme: %s",
         state_.thumbs_available ? "yes (chafa)"
             : Thumbnails::renderer_available() ? "no (disabled)" : "no (chafa missing!)",
@@ -120,7 +137,10 @@ App::App(Theme theme) {
 }
 
 App::~App() { force_cleanup(); }
-void App::force_cleanup() { player_.stop(); tui_.shutdown(); }
+void App::force_cleanup() {
+    if (sb_worker_.joinable()) sb_worker_.join();
+    player_.stop(); tui_.shutdown();
+}
 void App::set_player_options(const PlayerOptions& opts) { player_.set_options(opts); }
 
 // Resolve config_.graphics -> state_.gfx_mode. "auto" probes $TERM/env; for an
@@ -340,8 +360,13 @@ void App::build_actions() {
     state_.actions.push_back({Action::AddToPlaylist, "Add to playlist..."});
     state_.actions.push_back({Action::SaveToLibrary, "Save to library..."});
     state_.actions.push_back({Action::CopyURL,       "Copy URL"});
+    state_.actions.push_back({Action::Share,         "Share (QR + clipboard)"});
+    state_.actions.push_back({Action::AddToQueue,    "Add to queue"});
+    state_.actions.push_back({Action::PlayNext,      "Play next"});
+    state_.actions.push_back({Action::LoopToggle,
+        state_.loop_enabled ? "Loop: off" : "Loop: on"});
 
-    if (state_.logged_in)
+    if (!state_.auth_browser.empty())
         state_.actions.push_back({Action::Logout, "Logout (" + state_.auth_browser + ")"});
     else
         state_.actions.push_back({Action::LoginBrowser, "Login via browser cookies"});
@@ -406,13 +431,15 @@ void App::enter_playlist(const std::string& playlist_id) {
 
 int App::run() {
     if (!tui_.init()) return 1;
-    // ncurses has now reported the real colour count (refine_from_ncurses);
-    // re-run the capability gate authoritatively so a terminal that turned out
-    // to have no colour gets thumbnails/graphics disabled before first render.
     apply_capability_overrides(/*authoritative=*/true);
     state_.status_message = rgreet();
+    watch_state_.load();
 
-    while (state_.running) {
+    bool was_playing = false;
+    std::string sb_loaded_for;  // video_id for which SB was last requested
+    int prev_ui_mode = -1;
+
+    while (state_.running && !termination_requested) {
         tui_.get_dimensions(state_.term_w, state_.term_h);
         state_.is_playing  = player_.is_playing();
         state_.is_paused   = player_.is_paused();
@@ -431,21 +458,68 @@ int App::run() {
             state_.playback_dur = 0;
         }
 
+        // v5: end-of-play detection + sleep timer + SponsorBlock
+        {
+            bool just_ended   = was_playing && !state_.is_playing;
+            bool just_started = !was_playing && state_.is_playing;
+            was_playing = state_.is_playing;
+            if (just_ended)   on_video_end();
+            // Kick off a SB fetch whenever a NEW video starts (or a fresh play
+            // after the last one ended). Compare against the video_id we already
+            // fetched so we don't re-fetch on resume-from-pause.
+            if (just_started || (state_.is_playing && !state_.now_playing_id.empty()
+                                  && state_.now_playing_id != sb_loaded_for)) {
+                if (state_.now_playing_id != sb_loaded_for) {
+                    if (start_sb_fetch(state_.now_playing_id))
+                        sb_loaded_for = state_.now_playing_id;
+                }
+            }
+        }
+        tick_timer();
+        tick_sponsorblock();
+        auto save_error = library_.take_save_error();
+        if (!save_error.empty()) state_.status_message = "Save failed: " + save_error;
+        state_.timer_status = timer_.active() ? timer_.describe() : "";
+
+        // Poll background download (non-blocking): notify when it finishes.
+        if (download_pid_ > 0) {
+            int wstatus = 0;
+            pid_t r = ::waitpid(download_pid_, &wstatus, WNOHANG);
+            if (r == download_pid_) {
+                download_pid_ = -1;
+                if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0)
+                    state_.status_message = "Download complete! Files in ~/Downloads (^_^)b";
+                else
+                    state_.status_message = "Download failed — check ~/Downloads (;_;)";
+            }
+        }
+
         // ── Resolve UI mode ───────────────────────────────────────────────────
         // Default is the full ("normal") UI. We only drop to the streamlined
         // music-player layout when the terminal is RELIABLY very narrow: a
         // positive, sane width below the threshold. Terminals that can't report
         // a size fall back to 80 cols (or $COLUMNS), so they stay in normal mode.
-        constexpr int STREAM_MAX_W = 48;   // "WAAAY too narrow" cutoff
+        constexpr int STREAM_MAX_W = 48;   // enter streamlined below this
+        constexpr int STREAM_EXIT_W = 52;  // exit streamlined at or above this (hysteresis)
         if (config_.mode == "streamlined")      state_.ui_mode = 1;
         else if (config_.mode == "normal")      state_.ui_mode = 0;
-        else /* auto */ state_.ui_mode = (state_.term_w > 4 && state_.term_w < STREAM_MAX_W) ? 1 : 0;
+        else /* auto */ {
+            bool narrow = (state_.term_w > 4 && state_.term_w < STREAM_MAX_W);
+            bool wide   = (state_.term_w >= STREAM_EXIT_W);
+            if      (narrow) state_.ui_mode = 1;
+            else if (wide)   state_.ui_mode = 0;
+            // hysteresis zone [48,51]: keep current mode, avoid thrash
+        }
+        if (prev_ui_mode != -1 && prev_ui_mode != state_.ui_mode)
+            sync_mode_transition(prev_ui_mode, state_.ui_mode);
+        prev_ui_mode = state_.ui_mode;
 
         // ── Clamp playlist indices before render ──────────────────────────────
         if (!state_.current_playlist_id.empty()) {
             const Playlist* pl = library_.get_playlist(state_.current_playlist_id);
             if (pl && !pl->videos.empty()) {
                 int n = (int)pl->videos.size();
+                state_.playlist_video_count = n;
                 state_.playlist_video_idx = std::clamp(state_.playlist_video_idx, 0, n - 1);
                 int max_vis = std::max(1, state_.term_h - 4 - 7 - 2);
                 if (state_.playlist_video_idx >= state_.playlist_video_scroll + max_vis)
@@ -455,6 +529,12 @@ int App::run() {
             }
         }
         if (state_.active_tab == Tab::Playlists) {
+            // Keep playlist_names fresh every frame so input.cpp navigation
+            // bounds are always valid.  refresh_playlist_names() is cheap
+            // (in-memory copy) and was previously only called from
+            // show_playlist_picker(), leaving playlist_names empty on a fresh
+            // launch and breaking all navigation until the picker was opened.
+            refresh_playlist_names();
             int n_pl = (int)library_.playlists().size();
             if (n_pl > 0)
                 state_.selected_playlist = std::clamp(state_.selected_playlist, 0, n_pl - 1);
@@ -477,6 +557,15 @@ int App::run() {
 
         // Refresh the settings-UI display snapshot so the TUI can render the
         // panel without depending on Config directly.
+        // Keep settings-display fields in sync whether or not the panel is open,
+        // so the General tab shows live values even before first open.
+        state_.sponsorblock_enabled = config_.sponsorblock;
+        state_.config_mode          = config_.mode;
+        state_.resume_playback      = config_.resume_playback;
+        state_.loop_playlist        = config_.loop_playlist;
+        state_.streamlined_loop     = config_.streamlined_loop;
+        state_.show_status_bar      = config_.show_status_bar;
+        state_.show_hints           = config_.show_hints;
         if (state_.show_settings) {
             state_.settings_theme_names.assign(kThemeNames, kThemeNames + kThemeCount);
             state_.settings_accel_labels.clear();
@@ -500,6 +589,18 @@ int App::run() {
             continue;
         }
 
+        if (state_.show_share) {
+            input_.handle(ch, state_);
+            if (state_.status_message == "__SHARE_COPY__") {
+                const auto& caps = TermCaps::get();
+                auto result = ytcui::share::copy(state_.share_url,
+                    caps.id != TermId::AppleTerminal && !caps.in_multiplexer);
+                state_.share_copy_status = result.detail;
+                state_.status_message = result.detail;
+            }
+            continue;
+        }
+
         // ── In-app settings UI (Ctrl-S) ───────────────────────────────────────
         // Ctrl-S is byte 0x13 (also what Ctrl-Shift-S sends; terminals ignore
         // Shift for control chars). Flow control was disabled in TUI::init so
@@ -514,10 +615,50 @@ int App::run() {
         }
         if (state_.show_settings) {
             handle_settings_key(ch);
-            continue;   // settings UI owns all keys while open
+            continue;
+        }
+
+        // ── v5 modal panels ───────────────────────────────────────────────────
+        if (state_.show_timer_prompt) {
+            // TimerPrompt is rendered / handled via Panel::TimerPrompt focus;
+            // input_.handle already dispatches it via handle_timer_prompt().
+        }
+
+        // Sleep timer prompt (default Ctrl-T, rebindable in Settings → Accelerators)
+        if (ch == config_.keys.timer && !state_.show_timer_prompt) {
+            handle_timer_key();
+            continue;
+        }
+        // Ctrl-R: loop toggle
+        if (ch == 0x12) {
+            state_.loop_enabled = !state_.loop_enabled;
+            state_.status_message = state_.loop_enabled
+                ? "Loop on — will restart when done (^_^)" : "Loop off";
+            continue;
+        }
+        // Ctrl-B: backend cycle (ytcui-dl → yt-dlp → ytcui-we → ytcui-dl)
+        if (ch == 0x02) {
+            {
+                BackendKind next = (state_.active_backend == BackendKind::YtcuiDl) ? BackendKind::YtDlp
+                                 : (state_.active_backend == BackendKind::YtDlp)   ? BackendKind::YtcuiWe
+                                 :                                                    BackendKind::YtcuiDl;
+                switch_backend(next);
+            }
+            continue;
         }
 
         bool should_search = input_.handle(ch, state_);
+
+        // ── Resolution menu requests (set by input.cpp, resolved here) ────────
+        if (state_.res_menu_requested) {
+            state_.res_menu_requested = false;
+            open_res_menu();
+        }
+        if (state_.pending_res_height >= 0) {
+            int h = state_.pending_res_height;
+            state_.pending_res_height = -1;
+            apply_resolution(h);
+        }
 
         // ── Status message dispatch ───────────────────────────────────────────
 
@@ -550,6 +691,38 @@ int App::run() {
             int t = (int)state_.seek_to_secs;
             char sbuf[32]; snprintf(sbuf, sizeof(sbuf), ">> %d:%02d", t / 60, t % 60);
             state_.status_message = sbuf;
+        }
+        else if (state_.status_message == "__APPLY_TIMER__") {
+            apply_timer_input();
+        }
+        else if (state_.status_message == "__QUEUE_PLAY__") {
+            if (state_.queue_sel >= 0 && state_.queue_sel < (int)queue_.size()) {
+                Video v = queue_.items()[state_.queue_sel];
+                queue_.remove((std::size_t)state_.queue_sel);
+                sync_queue_display();
+                player_.stop();
+                start_play(v, PlayMode::Audio);
+                state_.status_message = "Playing: " + v.title;
+                state_.show_queue = false;
+                state_.focus = Panel::Results;
+            } else {
+                state_.status_message = rgreet();
+            }
+        }
+        else if (state_.status_message == "__QUEUE_REMOVE__") {
+            if (state_.queue_sel >= 0 && state_.queue_sel < (int)queue_.size()) {
+                queue_.remove((std::size_t)state_.queue_sel);
+                sync_queue_display();
+                state_.queue_sel = std::clamp(state_.queue_sel, 0,
+                                              std::max(0, (int)queue_.size() - 1));
+                if (queue_.empty()) {
+                    state_.show_queue = false;
+                    state_.focus = Panel::Results;
+                    state_.status_message = "Queue empty";
+                } else {
+                    state_.status_message = "Removed from queue";
+                }
+            }
         }
 
         // ── Streamlined-mode section loaders & playback ───────────────────────
@@ -622,6 +795,13 @@ int App::run() {
             }
         }
 
+        if (state_.status_message == "__STREAM_MORE_ACTIONS__") {
+            build_actions();
+            state_.selected_action = 0;
+            state_.stream_screen   = (int)StreamScreen::MoreActions;
+            state_.status_message.clear();
+        }
+
         // ── Home tab item clicked / Enter'd → search that title ───────────────
         if (state_.status_message == "__HOME_SEARCH__") {
             std::string title;
@@ -673,9 +853,16 @@ int App::run() {
                 state_.browser_pick_idx < (int)state_.browser_choices.size()) {
                 std::string b = state_.browser_choices[state_.browser_pick_idx];
                 Auth::set_browser(b);
-                state_.logged_in = true;
+                state_.logged_in = false;
                 state_.auth_browser = b;
-                state_.status_message = "Logged in via " + b + " (^_^)b";
+                std::string error;
+                std::string path = Config::config_dir() + "/browser-cookies.txt";
+                if (Auth::export_session(b, path, error)) {
+                    config_.cookies_file = path;
+                    YouTube::configure_cookies(path);
+                    config_.save();
+                    state_.status_message = "Session imported from " + b + "; sign-in unverified";
+                } else state_.status_message = "Browser configured; " + error;
             } else {
                 state_.status_message = rgreet();
             }
@@ -685,7 +872,11 @@ int App::run() {
 
         if (state_.status_message == "__SORT_APPLIED__") {
             apply_sort_filter();
-            state_.status_message = rgreet();
+            // Re-run the search so sort/filter takes effect immediately.
+            if (!state_.search_query.empty())
+                do_search();
+            else
+                state_.status_message = rgreet();
         }
 
         if (state_.status_message == "__SAVE_PICKED__") {
@@ -698,6 +889,13 @@ int App::run() {
             const auto& pls = library_.playlists();
             if (state_.selected_playlist >= 0 && state_.selected_playlist < (int)pls.size())
                 enter_playlist(pls[state_.selected_playlist].id);
+            state_.status_message = rgreet();
+        }
+
+        if (state_.status_message == "__PLAYLIST_TAG__") {
+            const auto& pls = library_.playlists();
+            if (state_.selected_playlist >= 0 && state_.selected_playlist < (int)pls.size())
+                library_.toggle_playlist_color(pls[state_.selected_playlist].id);
             state_.status_message = rgreet();
         }
 
@@ -780,8 +978,17 @@ int App::run() {
 
         // Standard action menu executed
         if (state_.status_message == "__EXEC_ACTION__") {
-            if (state_.selected_action >= 0 && state_.selected_action < (int)state_.actions.size())
-                execute_action(state_.actions[state_.selected_action].action);
+            if (state_.selected_action >= 0 && state_.selected_action < (int)state_.actions.size()) {
+                Action act = state_.actions[state_.selected_action].action;
+                execute_action(act);
+                // In streamlined mode, play actions should land on the Playing screen.
+                if (state_.ui_mode == 1 &&
+                    (act == Action::PlayVideo || act == Action::PlayAudio || act == Action::PlayAudioLoop)) {
+                    if (!state_.results.empty() && state_.selected_result < (int)state_.results.size())
+                        state_.stream_now = state_.results[state_.selected_result];
+                    state_.stream_screen = (int)StreamScreen::Playing;
+                }
+            }
             if (state_.status_message == "__EXEC_ACTION__")
                 state_.status_message = rgreet();
         }
@@ -816,6 +1023,27 @@ int App::run() {
 }
 
 void App::do_search() {
+    // v5: if the query is a YouTube URL, bypass the search API entirely
+    if (ytcui::url::looks_like_url(state_.search_query)) {
+        auto p = ytcui::url::parse(state_.search_query);
+        if (p.kind == ytcui::url::Kind::Video && !p.video_id.empty()) {
+            Video v;
+            v.id            = p.video_id;
+            v.title         = "(direct link) " + p.video_id;
+            v.thumbnail_url = "https://i.ytimg.com/vi/" + p.video_id + "/mqdefault.jpg";
+            state_.results = { v };
+            state_.selected_result = 0;
+            state_.results_scroll  = 0;
+            state_.actions_visible = true;
+            state_.selected_action = 0;
+            state_.active_tab      = Tab::Results;
+            state_.focus           = Panel::Actions;
+            state_.status_message  = "Direct link — press Enter to play (^_^)";
+            prefetch_thumbnails();
+            return;
+        }
+    }
+
     state_.status_message = "Searching... (>_<)";
     state_.results.clear();
     state_.selected_result = 0;
@@ -825,7 +1053,8 @@ void App::do_search() {
     tui_.render(state_, &library_);
 
     std::string cookies = Auth::ytdlp_cookie_args();
-    auto results = youtube_.search(state_.search_query, config_.max_results, cookies);
+    auto results = youtube_.search(state_.search_query, config_.max_results, cookies,
+                                   config_.sort_by, config_.filter_type, config_.filter_dur);
 
     if (results.empty()) {
         state_.status_message = "No results found (T_T)";
@@ -900,8 +1129,9 @@ void App::do_save(int choice) {
                 dup2(devnull, STDERR_FILENO);
                 close(devnull);
             }
-            std::string mc = "mkdir -p '" + dir + "'";
-            int r = system(mc.c_str()); (void)r;
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            if (ec) _exit(1);
             const char* self = !exe.empty() ? exe.c_str() : "ytcui";
             if (!exe.empty()) {
                 execl(self, self, "--internal-download", v.id.c_str(), dir.c_str(),
@@ -912,6 +1142,8 @@ void App::do_save(int choice) {
                    cookies.c_str(), nullptr);
             _exit(127);
         }
+        // Track the PID so the render loop can notify on completion.
+        if (pid > 0) download_pid_ = pid;
         state_.status_message = "Downloading MP4 + MP3 to ~/Downloads... (>w<)b";
     }
 }
@@ -925,7 +1157,7 @@ void App::execute_action(Action action) {
             state_.status_message = "Loading video... (~_~)";
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Video);
+            start_play(v, PlayMode::Video);
             state_.status_message = "Playing: " + v.title;
             return;
         }
@@ -933,7 +1165,7 @@ void App::execute_action(Action action) {
             state_.status_message = "Loading audio... (~_~)";
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Audio);
+            start_play(v, PlayMode::Audio);
             state_.status_message = "Playing audio: " + v.title;
             return;
         }
@@ -941,7 +1173,7 @@ void App::execute_action(Action action) {
             state_.status_message = "Loading loop... (~_~)";
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::AudioLoop);
+            start_play(v, PlayMode::AudioLoop);
             state_.status_message = "Looping: " + v.title;
             return;
         }
@@ -995,9 +1227,34 @@ void App::execute_action(Action action) {
             return;
         case Action::Logout:
             Auth::clear_browser();
+            // Delete only the cookie file owned by this application's importer.
+            if (config_.cookies_file == Config::config_dir() + "/browser-cookies.txt")
+                ::unlink(config_.cookies_file.c_str());
+            config_.cookies_file.clear();
+            YouTube::configure_cookies("");
+            config_.save();
             state_.logged_in = false;
             state_.auth_browser.clear();
             state_.status_message = "Logged out (~_~)/";
+            return;
+        case Action::Share: {
+            std::string url = "https://youtu.be/" + v.id;
+            show_share_menu(url);
+            return;
+        }
+        case Action::AddToQueue:
+            queue_.add(v);
+            sync_queue_display();
+            state_.status_message = "Added to queue: " + v.title.substr(0, 30);
+            return;
+        case Action::PlayNext:
+            queue_.play_next(v);
+            sync_queue_display();
+            state_.status_message = "Play next: " + v.title.substr(0, 30);
+            return;
+        case Action::LoopToggle:
+            state_.loop_enabled = !state_.loop_enabled;
+            state_.status_message = state_.loop_enabled ? "Loop on (^_^)" : "Loop off";
             return;
         default:
             break;  // Playlist-only actions are handled by execute_playlist_action
@@ -1019,7 +1276,7 @@ void App::execute_playlist_action(Action action) {
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id,
                                     v.thumbnail_url, v.duration_seconds);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Video);
+            start_play(entry_to_video(v), PlayMode::Video);
             state_.status_message = "Playing: " + v.title;
             return;
         }
@@ -1028,7 +1285,7 @@ void App::execute_playlist_action(Action action) {
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id,
                                     v.thumbnail_url, v.duration_seconds);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::Audio);
+            start_play(entry_to_video(v), PlayMode::Audio);
             state_.status_message = "Playing audio: " + v.title;
             return;
         }
@@ -1037,7 +1294,7 @@ void App::execute_playlist_action(Action action) {
             tui_.render(state_, &library_);
             library_.add_to_history(v.id, v.title, v.channel, v.channel_id,
                                     v.thumbnail_url, v.duration_seconds);
-            player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, PlayMode::AudioLoop);
+            start_play(entry_to_video(v), PlayMode::AudioLoop);
             state_.status_message = "Looping: " + v.title;
             return;
         }
@@ -1208,6 +1465,11 @@ void App::handle_settings_key(int ch) {
     // — but with guards. Some keys can't be bound (they'd make the UI or the
     // process uncontrollable), and the Enter that STARTED the capture must not
     // register as the bound key.
+    if (state_.settings_capturing && ch == KEY_MOUSE) {
+        MEVENT event; getmouse(&event);
+        state_.settings_toast = "Press a keyboard key to bind";
+        return;
+    }
     if (state_.settings_capturing) {
         // Enter/CR/LF: this is almost always the residue of the Enter press
         // that began the capture (terminals send CR+LF; ncurses can deliver the
@@ -1257,7 +1519,7 @@ void App::handle_settings_key(int ch) {
             return;
 
         case '\t':                          // Tab switches sub-tabs
-            state_.settings_tab = (state_.settings_tab + 1) % 2;
+            state_.settings_tab = (state_.settings_tab + 1) % 5;
             state_.settings_sel = 0;
             return;
 
@@ -1266,8 +1528,59 @@ void App::handle_settings_key(int ch) {
             return;
 
         case KEY_DOWN: case 'j': {
-            int n = (state_.settings_tab == 0) ? kThemeCount : kAccelCount;
+            int n = (state_.settings_tab == 0) ? kThemeCount
+                  : (state_.settings_tab == 1) ? kAccelCount
+                  : (state_.settings_tab == 2) ? 8   // backend/mode/sb/resume/playlist/streamlined/statusbar/hints
+                  : (state_.settings_tab == 3) ? 2   // timer + loop
+                  : 0;                                 // about: display only
             if (state_.settings_sel < n - 1) state_.settings_sel++;
+            return;
+        }
+
+        case KEY_MOUSE: {
+            MEVENT ev;
+            if (getmouse(&ev) != OK) return;
+            if (!(ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED))) return;
+            int pw = std::min(60, state_.term_w - 2);
+            int ph = 22; if (ph > state_.term_h - 2) ph = state_.term_h - 2;
+            int px = std::max(0, (state_.term_w - pw) / 2);
+            int py = std::max(0, (state_.term_h - ph) / 2);
+            int list_top  = py + 3;
+            int list_rows = ph - 5;
+
+            // Click on a settings tab label to switch to it.
+            if (ev.y == py + 1) {
+                static const char* tabs[] = {"Theme","Accelerators","General","Timer","About"};
+                int tx = px + 2;
+                for (int t = 0; t < 5; t++) {
+                    int tw = (int)strlen(tabs[t]) + 3;
+                    if (ev.x >= tx && ev.x < tx + tw) {
+                        state_.settings_tab = t;
+                        state_.settings_sel = 0;
+                        return;
+                    }
+                    tx += tw;
+                }
+                return;
+            }
+
+            // Click on a list item within the panel.
+            if (ev.y >= list_top && ev.y < list_top + list_rows &&
+                ev.x >= px + 1 && ev.x < px + pw - 1) {
+                int n = (state_.settings_tab == 0) ? kThemeCount
+                      : (state_.settings_tab == 1) ? kAccelCount
+                      : (state_.settings_tab == 2) ? 8
+                      : (state_.settings_tab == 3) ? 2
+                      : 0;
+                if (n == 0) return;
+                int first = (state_.settings_sel >= list_rows)
+                            ? state_.settings_sel - list_rows + 1 : 0;
+                int idx = first + (ev.y - list_top);
+                if (idx >= 0 && idx < n) {
+                    state_.settings_sel = idx;
+                    handle_settings_key('\n');  // apply selection
+                }
+            }
             return;
         }
 
@@ -1279,10 +1592,76 @@ void App::handle_settings_key(int ch) {
                     state_.settings_toast = std::string("theme: ") +
                                             kThemeNames[state_.settings_sel];
                 }
-            } else {
+            } else if (state_.settings_tab == 1) {
                 // Accelerators tab: begin capturing the next key.
                 state_.settings_capturing = true;
                 state_.settings_toast = "press a key to bind (Esc to cancel)";
+            } else if (state_.settings_tab == 2) {
+                // General tab: cycle values
+                if (state_.settings_sel == 0) {
+                    // Backend: cycle ytcui-dl → yt-dlp → ytcui-we → ytcui-dl
+                    BackendKind next = (config_.backend == BackendKind::YtcuiDl) ? BackendKind::YtDlp
+                                     : (config_.backend == BackendKind::YtDlp)   ? BackendKind::YtcuiWe
+                                     :                                              BackendKind::YtcuiDl;
+                    switch_backend(next);
+                } else if (state_.settings_sel == 1) {
+                    // UI mode: cycle auto → normal → streamlined
+                    if (config_.mode == "auto")          config_.mode = "normal";
+                    else if (config_.mode == "normal")   config_.mode = "streamlined";
+                    else                                 config_.mode = "auto";
+                    config_.save();
+                    state_.settings_toast = "mode: " + config_.mode;
+                } else if (state_.settings_sel == 2) {
+                    // SponsorBlock toggle
+                    config_.sponsorblock = !config_.sponsorblock;
+                    state_.sponsorblock_enabled = config_.sponsorblock;
+                    config_.save();
+                    state_.settings_toast = std::string("SponsorBlock: ")
+                                          + (config_.sponsorblock ? "on" : "off");
+                } else if (state_.settings_sel == 3) {
+                    // Resume playback toggle
+                    config_.resume_playback = !config_.resume_playback;
+                    config_.save();
+                    state_.settings_toast = std::string("Resume: ")
+                                          + (config_.resume_playback ? "on" : "off");
+                } else if (state_.settings_sel == 4) {
+                    // Loop playlist toggle
+                    config_.loop_playlist = !config_.loop_playlist;
+                    config_.save();
+                    state_.settings_toast = std::string("Loop playlist: ")
+                                          + (config_.loop_playlist ? "on" : "off");
+                } else if (state_.settings_sel == 5) {
+                    // Streamlined loop toggle
+                    config_.streamlined_loop = !config_.streamlined_loop;
+                    config_.save();
+                    state_.settings_toast = std::string("Streamlined loop: ")
+                                          + (config_.streamlined_loop ? "on" : "off");
+                } else if (state_.settings_sel == 6) {
+                    // Status bar toggle
+                    config_.show_status_bar = !config_.show_status_bar;
+                    state_.show_status_bar  = config_.show_status_bar;
+                    config_.save();
+                    state_.settings_toast = std::string("Status bar: ")
+                                          + (config_.show_status_bar ? "on" : "off");
+                } else if (state_.settings_sel == 7) {
+                    // Hints toggle
+                    config_.show_hints = !config_.show_hints;
+                    state_.show_hints  = config_.show_hints;
+                    config_.save();
+                    state_.settings_toast = std::string("Hints: ")
+                                          + (config_.show_hints ? "on" : "off");
+                }
+            } else if (state_.settings_tab == 3) {
+                if (state_.settings_sel == 0) {
+                    // Sleep timer row: close settings, open timer prompt
+                    state_.show_settings = false;
+                    config_.save();
+                    handle_timer_key();
+                } else {
+                    // Loop toggle row
+                    state_.loop_enabled = !state_.loop_enabled;
+                    state_.settings_toast = state_.loop_enabled ? "Loop: on" : "Loop: off";
+                }
             }
             return;
 
@@ -1290,6 +1669,240 @@ void App::handle_settings_key(int ch) {
             // On the Theme tab, live-preview as the cursor moves via arrows is
             // handled above; nothing else to do here.
             return;
+    }
+}
+
+// ─── v5 feature methods ────────────────────────────────────────────────────────
+
+void App::tick_timer() {
+    if (!timer_.active()) return;
+    if (timer_.fire_if_due()) {
+        if (player_.is_playing() && !player_.is_paused()) {
+            player_.toggle_pause();
+            state_.is_paused = true;
+        }
+        state_.status_message = "Sleep timer fired — paused (zzz)";
+        Log::write("SleepTimer fired");
+    }
+}
+
+void App::on_video_end() {
+    // Record the finished video in watch state
+    if (!state_.now_playing.empty())
+        watch_state_.record(state_.now_playing_id, state_.now_playing, "", 0, 0, /*finished=*/true);
+
+    // Streamlined mode always loops by default (unless config overrides it).
+    bool effective_loop = state_.loop_enabled
+                       || (config_.streamlined_loop && state_.ui_mode == 1);
+
+    // Loop: replay the same video if loop is enabled and no queue entry follows
+    if (effective_loop && queue_.empty()) {
+        const Video* target = nullptr;
+        if (!state_.results.empty() && state_.selected_result < (int)state_.results.size())
+            target = &state_.results[state_.selected_result];
+        else if (!state_.stream_now.empty())
+            target = &state_.stream_now;
+        if (target) {
+            start_play(*target, PlayMode::Audio);
+            state_.status_message = "Looping: " + target->title;
+        }
+        return;
+    }
+
+    // Queue: take the next item
+    if (!queue_.empty()) {
+        Video next = queue_.take();
+        sync_queue_display();
+        start_play(next, PlayMode::Audio);
+        state_.status_message = "Playing next: " + next.title;
+    }
+}
+
+void App::sync_queue_display() {
+    state_.queue_items = queue_.items();
+    state_.queue_sel   = std::clamp(state_.queue_sel, 0,
+                                    std::max(0, (int)queue_.size() - 1));
+}
+
+void App::handle_timer_key() {
+    state_.timer_prompt_input.clear();
+    if (timer_.active()) {
+        timer_.cancel();
+        state_.status_message = "Timer cancelled";
+        return;
+    }
+    state_.show_timer_prompt = true;
+    state_.focus = Panel::TimerPrompt;
+}
+
+void App::apply_timer_input() {
+    state_.show_timer_prompt = false;
+    state_.focus = Panel::Results;
+    int secs = ytcui::parse_duration(state_.timer_prompt_input);
+    if (secs <= 0) {
+        state_.status_message = "Bad duration — try '30m' or '1h23m'";
+        return;
+    }
+    timer_.set(secs);
+    state_.status_message = "Timer set: " + timer_.describe();
+    state_.timer_prompt_input.clear();
+}
+
+void App::show_share_menu(const std::string& url) {
+    state_.share_return_focus = state_.focus;
+    state_.share_url = url;
+    state_.share_mode = 0;
+    state_.share_copy_status = "Press c to copy the link";
+    state_.show_share = true;
+    state_.focus = Panel::ShareMenu;
+}
+
+void App::switch_backend(BackendKind k) {
+    state_.active_backend = k;
+    config_.backend = k;
+    config_.save();
+    const char* name = (k == BackendKind::YtcuiDl) ? "ytcui-dl (native)"
+                     : (k == BackendKind::YtcuiWe)  ? "ytcui-we"
+                     :                                 "yt-dlp";
+    state_.status_message = std::string("Backend: ") + name;
+    Log::write("Backend switched to %s", name);
+}
+
+void App::open_res_menu() {
+    auto rungs = player_.resolution_rungs();
+    if (rungs.empty()) {
+        state_.status_message = "No resolution data yet — play a video first";
+        return;
+    }
+    state_.res_labels.clear();
+    state_.res_heights.clear();
+    // Prepend "Best available" (height 0) so user can reset to auto
+    state_.res_labels.push_back("Best available");
+    state_.res_heights.push_back(0);
+    for (auto& [h, lab] : rungs) {
+        state_.res_labels.push_back(lab);
+        state_.res_heights.push_back(h);
+    }
+    // Set cursor to current preferred height; remember it for the "active" marker
+    state_.res_active_height = config_.preferred_height;
+    state_.res_sel = 0;
+    for (int i = 0; i < (int)state_.res_heights.size(); i++) {
+        if (state_.res_heights[i] == config_.preferred_height) {
+            state_.res_sel = i;
+            break;
+        }
+    }
+    state_.show_res_menu = true;
+    state_.focus = Panel::ResMenu;
+}
+
+void App::apply_resolution(int height) {
+    config_.preferred_height = height;
+    config_.save();
+    PlayerOptions opts = player_.get_options();
+    opts.preferred_height = height;
+    player_.set_options(opts);
+    state_.show_res_menu = false;
+    state_.focus = Panel::Results;
+    std::string label = (height == 0) ? "auto" : std::to_string(height) + "p";
+    state_.status_message = "Quality: " + label;
+    // If currently playing video, restart to apply the new resolution
+    if (state_.is_playing && !state_.stream_now.empty()) {
+        start_play(state_.stream_now, state_.play_mode);
+    }
+}
+
+void App::start_play(const Video& v, PlayMode mode) {
+    const bool new_video = state_.now_playing_id != v.id;
+    state_.now_playing_id = v.id;
+    state_.stream_now     = v;
+    state_.play_mode      = mode;
+    user_stopped_         = false;
+    if (new_video) {
+        std::lock_guard<std::mutex> lk(sb_mutex_);
+        sb_segs_     = {};
+        sb_video_id_.clear();
+    }
+    sb_last_seek_ = {};
+    // Sync runtime options into PlayerOptions before each play.
+    PlayerOptions opts = player_.get_options();
+    opts.preferred_height = config_.preferred_height;
+    opts.backend          = config_.backend;
+    opts.cookies_file     = config_.cookies_file;
+    opts.backend_auto_failover = config_.backend_auto_failover;
+    opts.ytdlp_path = config_.ytdlp_path;
+    opts.mpv_path = config_.mpv_path;
+    opts.browser = Auth::get_configured_browser();
+    player_.set_options(opts);
+    player_.play("https://www.youtube.com/watch?v=" + v.id, v.title, mode);
+}
+
+void App::sync_mode_transition(int from, int to) {
+    if (from == 0 && to == 1) {
+        // normal → streamlined: route to the most relevant screen
+        if (state_.is_playing)
+            state_.stream_screen = (int)StreamScreen::Playing;
+        else if (!state_.results.empty()) {
+            state_.stream_screen  = (int)StreamScreen::Browse;
+            state_.stream_section = "Results";
+        } else
+            state_.stream_screen = (int)StreamScreen::Menu;
+    }
+    // streamlined → normal: no-op; normal-mode state is fully preserved
+}
+
+bool App::start_sb_fetch(const std::string& video_id) {
+    if (!config_.sponsorblock)  return false;
+    if (video_id.empty())       return false;
+    // Prevent overlapping fetches
+    bool expected = false;
+    if (!sb_fetching_.compare_exchange_strong(expected, true)) return false;
+    if (sb_worker_.joinable()) sb_worker_.join();
+
+    // Copy everything the thread needs — no shared pointers into App
+    std::string vid  = video_id;
+    std::string cats = config_.sponsorblock_categories;
+    sb_worker_ = std::thread([this, vid, cats]() {
+        ytcui::sb::Segments segs;
+        try { segs = sb_fetch_(vid, cats); } catch (...) {}
+        {
+            std::lock_guard<std::mutex> lk(sb_mutex_);
+            sb_segs_      = std::move(segs);
+            sb_video_id_  = vid;
+        }
+        sb_fetching_.store(false);
+    });
+    return true;
+}
+
+void App::tick_sponsorblock() {
+    // Update the summary string (cheap even under lock)
+    {
+        std::lock_guard<std::mutex> lk(sb_mutex_);
+        if (sb_video_id_ == state_.now_playing_id && sb_segs_.fetched)
+            state_.sponsorblock_summary = sb_segs_.summary();
+        else
+            state_.sponsorblock_summary.clear();
+    }
+
+    if (!config_.sponsorblock || !state_.is_playing || state_.is_paused) return;
+
+    double pos = state_.playback_pos;
+    if (pos < 0) return;
+
+    double target;
+    {
+        std::lock_guard<std::mutex> lk(sb_mutex_);
+        target = sb_video_id_ == state_.now_playing_id ? sb_segs_.skip_target(pos) : -1;
+    }
+    if (target >= 0) {
+        auto now  = std::chrono::steady_clock::now();
+        auto ms   = std::chrono::duration_cast<std::chrono::milliseconds>(now - sb_last_seek_).count();
+        if (ms > 1500) {
+            player_.seek_to(target);
+            sb_last_seek_ = now;
+            Log::write("SponsorBlock skip: %.1f -> %.1f", pos, target);
+        }
     }
 }
 

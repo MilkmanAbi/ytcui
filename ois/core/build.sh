@@ -36,8 +36,9 @@ _ois_build_brew_env() {
 
 _ois_build_env() {
     case "$OIS_OS" in
-        macos|freebsd|openbsd|netbsd|dragonfly)
+        macos|freebsd|openbsd|dragonfly)
             : "${CC:=clang}" ; : "${CXX:=clang++}" ;;
+        # NetBSD's native toolchain is GCC, exposed as cc/c++.
         *)  : "${CC:=cc}"   ; : "${CXX:=c++}" ;;
     esac
     export CC CXX
@@ -63,6 +64,13 @@ _ois_build_env() {
     OIS_JOBS="$OIS_BUILD_JOBS"
     [ "$OIS_JOBS" = "auto" ] && OIS_JOBS="$(ois_cpu_count)"
     case "$OIS_JOBS" in ''|*[!0-9]*) OIS_JOBS=1 ;; esac
+    # An optional ceiling lets CI/shared machines bound even auto or -j0.
+    case "${OIS_MAX_JOBS:-}" in
+        ''|*[!0-9]*|0) ;;
+        *) if [ "$OIS_JOBS" = 0 ] || [ "$OIS_JOBS" -gt "$OIS_MAX_JOBS" ]; then
+               OIS_JOBS="$OIS_MAX_JOBS"
+           fi ;;
+    esac
 }
 
 _ois_build_locate() {

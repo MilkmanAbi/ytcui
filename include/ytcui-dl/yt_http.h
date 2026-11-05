@@ -17,6 +17,7 @@
  */
 
 #include <cerrno>
+#include <algorithm>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
@@ -32,23 +33,21 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <arpa/inet.h>
 #include <netdb.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <zlib.h>
 
-#ifndef MSG_NOSIGNAL
-#define MSG_NOSIGNAL 0  // AAS Note to self, keep around as workaround for older macOS, BSD
-#endif
-
 namespace ytfast {
+inline constexpr size_t kMaxMetadataBody = 64u * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // URL splitting
@@ -62,9 +61,13 @@ struct Url {
         else if (u.rfind("http://", 0) == 0)  { out.tls = false; u.remove_prefix(7); }
         else return false;
 
-        size_t slash = u.find('/');
+        if (u.find_first_of("\r\n \t") != std::string_view::npos || u.find('\0') != std::string_view::npos) return false;
+        size_t slash = u.find_first_of("/?#");
         std::string_view auth = slash == std::string_view::npos ? u : u.substr(0, slash);
+        if (auth.find('@') != std::string_view::npos) return false;
         out.path = slash == std::string_view::npos ? "/" : std::string(u.substr(slash));
+        if (out.path.front() != '/') out.path.insert(out.path.begin(), '/');
+        out.path = out.path.substr(0, out.path.find('#'));
 
         size_t colon = auth.rfind(':');
         // Guard against IPv6 literals like [::1] having no port.
@@ -204,6 +207,12 @@ private:
                 if (SSL_CTX_load_verify_locations(ctx_, p, nullptr)) break;
         }
         SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
+        if (const char* custom_ca = std::getenv("SSL_CERT_FILE"); custom_ca && *custom_ca) {
+            if (SSL_CTX_load_verify_locations(ctx_, custom_ca, nullptr) != 1) {
+                SSL_CTX_free(ctx_); ctx_ = nullptr;
+                throw std::runtime_error("cannot load SSL_CERT_FILE trust bundle");
+            }
+        }
         // SSL_SESS_CACHE_NO_INTERNAL_STORE: we keep sessions ourselves, keyed
         // by host, so OpenSSL's own client cache would just duplicate them.
         SSL_CTX_set_session_cache_mode(
@@ -258,12 +267,20 @@ public:
         freeaddrinfo(res);
         if (fd_ < 0) return false;
 
+        set_timeout(connect_ms);
         if (tls) {
             ssl_ = SSL_new(TlsCtx::get());
             if (!ssl_) { close_(); return false; }
             SSL_set_fd(ssl_, fd_);
-            SSL_set_tlsext_host_name(ssl_, host.c_str());        // SNI
-            SSL_set1_host(ssl_, host.c_str());                   // hostname check
+            unsigned char address[16];
+            const bool numeric = ::inet_pton(AF_INET, host.c_str(), address) == 1 ||
+                                 ::inet_pton(AF_INET6, host.c_str(), address) == 1;
+            if (numeric) {
+                if (X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl_), host.c_str()) != 1) { close_(); return false; }
+            } else {
+                if (SSL_set_tlsext_host_name(ssl_, host.c_str()) != 1 ||
+                    SSL_set1_host(ssl_, host.c_str()) != 1) { close_(); return false; }
+            }
 
             session_key_ = host + ":" + port;
             SSL_set_ex_data(ssl_, detail::session_index(), (void*)session_key_.c_str());
@@ -285,6 +302,7 @@ public:
     bool tls_resumed() const { return resumed_; }
     const std::string& host() const { return host_; }
     const std::string& port() const { return port_; }
+    bool tls() const { return tls_; }
 
     void set_timeout(int ms) {
         timeval tv{ms / 1000, (ms % 1000) * 1000};
@@ -338,6 +356,7 @@ private:
 // ---------------------------------------------------------------------------
 inline bool gunzip(std::string_view in, std::string& out) {
     if (in.empty()) return true;
+    if (in.size() > kMaxMetadataBody) return false;
     z_stream zs{};
     // 15 window bits + 32 = auto-detect zlib or gzip wrapper.
     if (inflateInit2(&zs, 15 + 32) != Z_OK) return false;
@@ -356,11 +375,12 @@ inline bool gunzip(std::string_view in, std::string& out) {
             inflateEnd(&zs);
             return false;
         }
+        if (out.size() + sizeof buf - zs.avail_out > kMaxMetadataBody) { inflateEnd(&zs); return false; }
         out.append(buf, sizeof buf - zs.avail_out);
         if (rc == Z_BUF_ERROR && zs.avail_in == 0) break;
     } while (rc != Z_STREAM_END);
     inflateEnd(&zs);
-    return true;
+    return rc == Z_STREAM_END;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,67 +415,109 @@ public:
                   const std::function<void(int64_t, int64_t)>& progress = {},
                   int64_t resume_from = 0,
                   const std::vector<std::string>& extra_headers = {}) {
+        struct Close { Conn& connection; ~Close() { connection.close_(); } } close{conn_};
         Url u;
-        if (!Url::parse(url, u)) throw std::runtime_error("bad url: " + url);
-
+        if (!Url::parse(url, u)) throw std::runtime_error("bad download URL");
+        std::vector<std::string> headers = extra_headers;
         for (int redirect = 0; redirect <= kMaxRedirects; ++redirect) {
-            if (!conn_.alive() || conn_.host() != u.host || conn_.port() != u.port) {
-                if (!conn_.open(u.host, u.port, u.tls, connect_ms_))
-                    throw std::runtime_error("connect failed: " + u.host);
+            if (!conn_.alive() || conn_.host() != u.host || conn_.port() != u.port || conn_.tls() != u.tls) {
+                if (!conn_.open(u.host, u.port, u.tls, connect_ms_)) throw std::runtime_error("download connection failed");
             }
             conn_.set_timeout(io_ms_);
-
-            std::vector<std::string> hdrs = extra_headers;
-            // identity: we want raw bytes on disk, not a re-inflated stream
+            auto hdrs = headers;
             hdrs.emplace_back("Accept-Encoding: identity");
-            // The googlevideo CDN 403s a plain unranged GET on these signed
-            // URLs -- it only serves them in response to a Range request, even
-            // one starting at byte 0. Always send one unless the caller already
-            // supplied a more specific Range header of its own.
-            bool have_range = false;
-            for (const auto& h : hdrs) if (hdr_is(h, "range")) { have_range = true; break; }
-            if (!have_range)
-                hdrs.emplace_back("Range: bytes=" + std::to_string(resume_from) + "-");
-
-            std::string req = build_request("GET", u, nullptr, hdrs);
-            if (!conn_.write_all(req.data(), req.size())) {
-                conn_.close_();
-                continue;
+            std::string requested = "bytes=" + std::to_string(resume_from) + "-";
+            bool supplied = false;
+            for (const auto& header : hdrs) if (hdr_is(header, "range")) {
+                requested = header.substr(header.find(':') + 1);
+                while (!requested.empty() && requested.front() == ' ') requested.erase(0, 1);
+                supplied = true;
             }
-
-            long   status = 0;
+            if (!supplied) hdrs.emplace_back("Range: " + requested);
+            const auto request = build_request("GET", u, nullptr, hdrs);
+            if (!conn_.write_all(request.data(), request.size())) throw std::runtime_error("download write failed");
+            long status = 0;
             int64_t total = -1;
-            bool    chunked = false;
-            if (!read_head(status, total, chunked)) { conn_.close_(); continue; }
-
+            bool chunked = false;
+            if (!read_head(status, total, chunked)) throw std::runtime_error("invalid download headers");
             if (status >= 300 && status < 400 && !location_.empty()) {
-                std::string next = resolve(u, location_);
-                if (!Url::parse(next, u)) throw std::runtime_error("bad redirect");
-                conn_.close_();
-                continue;
+                Url next;
+                if (!Url::parse(resolve(u, location_), next)) throw std::runtime_error("invalid redirect");
+                if (u.tls && !next.tls) throw std::runtime_error("HTTPS downgrade redirect refused");
+                if (u.host != next.host || u.port != next.port) strip_credentials(headers);
+                u = std::move(next); conn_.close_(); continue;
             }
             if (status != 200 && status != 206) return status;
-
+            const auto dash = requested.find('-');
+            const int64_t expected_start = std::strtoll(requested.c_str() + 6, nullptr, 10);
+            const bool finite = dash != std::string::npos && dash + 1 < requested.size();
+            const int64_t expected_end = finite ? std::strtoll(requested.c_str() + dash + 1, nullptr, 10) : -1;
+            if (status == 206) {
+                long long first = -1, last = -1, all = -1;
+                if (std::sscanf(range_header_.c_str(), "bytes %lld-%lld/%lld", &first, &last, &all) != 3 ||
+                    first != expected_start || last < first || last >= all ||
+                    (finite && last != expected_end) || (total >= 0 && total != last - first + 1))
+                    throw std::runtime_error("mismatched Content-Range");
+            } else if (finite || expected_start > 0) throw std::runtime_error("server ignored requested range");
             int64_t got = 0;
-            if (total > 0 && progress) progress(0, total);
-
-            // Whatever of the body arrived alongside the headers
-            if (!pending_.empty()) {
-                if (!sink(pending_.data(), pending_.size())) return status;
-                got += (int64_t)pending_.size();
-                pending_.clear();
-            }
-            char buf[65536];
-            while (total < 0 || got < total) {
-                int n = conn_.read_some(buf, sizeof buf);
-                if (n <= 0) break;
-                if (!sink(buf, (size_t)n)) break;
-                got += n;
+            auto deliver = [&](const char* data, size_t length) {
+                if (!sink(data, length)) return false;
+                got += static_cast<int64_t>(length);
                 if (progress) progress(got, total);
+                return true;
+            };
+            if (progress) progress(0, total);
+            if (chunked) {
+                size_t position = 0;
+                auto byte = [&]() -> char {
+                    if (position == pending_.size()) {
+                        char buffer[65536];
+                        const int count = conn_.read_some(buffer, sizeof buffer);
+                        if (count <= 0) throw std::runtime_error("truncated chunked response");
+                        pending_.assign(buffer, static_cast<size_t>(count)); position = 0;
+                    }
+                    return pending_[position++];
+                };
+                auto line = [&]() {
+                    std::string value;
+                    while (value.size() <= 8192) {
+                        const char c = byte();
+                        if (c == '\r') { if (byte() != '\n') throw std::runtime_error("invalid chunk line"); return value; }
+                        value += c;
+                    }
+                    throw std::runtime_error("oversized chunk line");
+                };
+                for (;;) {
+                    auto size = line(); size = size.substr(0, size.find(';'));
+                    if (size.empty() || size.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+                        throw std::runtime_error("invalid chunk size");
+                    uint64_t left = std::stoull(size, nullptr, 16);
+                    if (!left) { while (!line().empty()) {} break; }
+                    while (left) {
+                        if (position == pending_.size()) { const char first = byte(); --position; (void)first; }
+                        const size_t count = static_cast<size_t>(std::min<uint64_t>(left, pending_.size() - position));
+                        if (!deliver(pending_.data() + position, count)) return status;
+                        position += count; left -= count;
+                    }
+                    if (!line().empty()) throw std::runtime_error("invalid chunk delimiter");
+                }
+            } else {
+                if (!pending_.empty()) {
+                    if (total >= 0 && static_cast<int64_t>(pending_.size()) > total) throw std::runtime_error("oversized response body");
+                    if (!deliver(pending_.data(), pending_.size())) return status;
+                }
+                char buffer[65536];
+                while (total < 0 || got < total) {
+                    const size_t wanted = total < 0 ? sizeof buffer : static_cast<size_t>(std::min<int64_t>(sizeof buffer, total - got));
+                    const int count = conn_.read_some(buffer, wanted);
+                    if (count <= 0) break;
+                    if (!deliver(buffer, static_cast<size_t>(count))) return status;
+                }
+                if (total >= 0 && got != total) throw std::runtime_error("truncated response body");
             }
             return status;
         }
-        throw std::runtime_error("download: too many redirects");
+        throw std::runtime_error("too many download redirects");
     }
 
     static std::string url_encode(std::string_view s) {
@@ -485,6 +547,7 @@ private:
     Conn conn_;
     int  connect_ms_ = 8000;
     int  io_ms_      = 30000;
+    std::string range_header_;
     std::string rbuf_;   // reused across requests, so no per-call allocation
 
     Response request(const char* method, const std::string& url,
@@ -494,7 +557,7 @@ private:
         if (!Url::parse(url, u)) throw std::runtime_error("bad url: " + url);
 
         // Reuse the socket when the target matches, otherwise reconnect.
-        if (!conn_.alive() || conn_.host() != u.host || conn_.port() != u.port) {
+        if (!conn_.alive() || conn_.host() != u.host || conn_.port() != u.port || conn_.tls() != u.tls) {
             if (!conn_.open(u.host, u.port, u.tls, connect_ms_))
                 throw std::runtime_error("connect failed: " + u.host);
             conn_.set_timeout(io_ms_);
@@ -515,8 +578,13 @@ private:
                         bool to_get = (r.status == 303) ||
                                       ((r.status == 301 || r.status == 302) &&
                                        std::strcmp(method, "POST") == 0);
+                        Url destination;
+                        if (!Url::parse(next, destination)) throw std::runtime_error("invalid redirect");
+                        if (u.tls && !destination.tls) throw std::runtime_error("HTTPS downgrade redirect refused");
+                        auto redirected = extra;
+                        if (u.host != destination.host || u.port != destination.port) strip_credentials(redirected);
                         return request(to_get ? "GET" : method, next,
-                                       to_get ? nullptr : body, extra,
+                                       to_get ? nullptr : body, redirected,
                                        redirects_left - 1);
                     }
                     return r;
@@ -538,7 +606,7 @@ private:
         std::string r;
         r.reserve(512 + (body ? body->size() : 0));
         r += method; r += ' '; r += u.path; r += " HTTP/1.1\r\n";
-        r += "Host: "; r += u.host;
+        r += "Host: "; r += u.host.find(':') == std::string::npos ? u.host : "[" + u.host + "]";
         if (u.port != (u.tls ? "443" : "80")) { r += ':'; r += u.port; }
         r += "\r\n";
         r += "Accept-Language: en-US,en;q=0.9\r\n";
@@ -549,6 +617,8 @@ private:
             if (hdr_is(h, "content-type"))   have_ct = true;
             if (hdr_is(h, "user-agent"))     have_ua = true;
             if (hdr_is(h, "accept-encoding")) have_enc = true;
+            if (h.find_first_of("\r\n") != std::string::npos || h.find('\0') != std::string::npos)
+                throw std::runtime_error("invalid HTTP header");
             r += h; r += "\r\n";
         }
         if (!have_enc)        r += "Accept-Encoding: gzip, deflate\r\n";
@@ -564,6 +634,13 @@ private:
         return r;
     }
 
+    static void strip_credentials(std::vector<std::string>& headers) {
+        headers.erase(std::remove_if(headers.begin(), headers.end(), [](const std::string& header) {
+            return hdr_is(header, "cookie") || hdr_is(header, "authorization") ||
+                   hdr_is(header, "proxy-authorization") || hdr_is(header, "x-origin") ||
+                   hdr_is(header, "x-goog-authuser");
+        }), headers.end());
+    }
     static bool hdr_is(const std::string& h, const char* name) {
         size_t n = std::strlen(name);
         if (h.size() < n + 1 || h[n] != ':') return false;
@@ -593,6 +670,8 @@ private:
         rbuf_.clear();
         location_.clear();
         pending_.clear();
+        range_header_.clear();
+        range_total_ = -1;
         char tmp[16384];
         size_t hdr_end = std::string::npos;
         while (hdr_end == std::string::npos) {
@@ -622,7 +701,7 @@ private:
                 if      (ieq(k, "content-length"))    content_length = atoll(std::string(v).c_str());
                 else if (ieq(k, "transfer-encoding")) chunked = icontains(v, "chunked");
                 else if (ieq(k, "location"))          location_ = std::string(v);
-                else if (ieq(k, "content-range"))     range_total_ = parse_range_total(v);
+                else if (ieq(k, "content-range")) { range_total_ = parse_range_total(v); range_header_ = std::string(v); }
             }
             pos = eol;
         }
@@ -687,6 +766,7 @@ private:
             pos = eol;
         }
 
+        if (content_length > static_cast<int64_t>(kMaxMetadataBody)) return false;
         std::string raw(rbuf_, hdr_end + 4);   // body bytes already buffered
 
         if (head_only || out.status == 204 || out.status == 304) {
@@ -700,13 +780,19 @@ private:
             while ((int64_t)raw.size() < content_length) {
                 int n = conn_.read_some(tmp, sizeof tmp);
                 if (n <= 0) break;
+                if (raw.size() + static_cast<size_t>(n) > kMaxMetadataBody) return false;
                 raw.append(tmp, (size_t)n);
             }
+            if ((int64_t)raw.size() < content_length) return false;
             raw.resize(std::min<size_t>(raw.size(), (size_t)content_length));
         } else {
             // No length and no chunking: read until close.
             int n;
-            while ((n = conn_.read_some(tmp, sizeof tmp)) > 0) raw.append(tmp, (size_t)n);
+            while ((n = conn_.read_some(tmp, sizeof tmp)) > 0) {
+                if (raw.size() + static_cast<size_t>(n) > kMaxMetadataBody) return false;
+                raw.append(tmp, static_cast<size_t>(n));
+            }
+            if (n < 0) return false;
             close_after_ = true;
         }
 
@@ -732,6 +818,7 @@ private:
             while (acc.size() < want) {
                 int n = conn_.read_some(tmp, sizeof tmp);
                 if (n <= 0) return false;
+                if (acc.size() + static_cast<size_t>(n) > 2 * kMaxMetadataBody) return false;
                 acc.append(tmp, (size_t)n);
             }
             return true;
@@ -739,9 +826,11 @@ private:
         auto need_line = [&](size_t from, size_t& eol) {
             for (;;) {
                 eol = acc.find("\r\n", from);
-                if (eol != std::string::npos) return true;
+                if (eol != std::string::npos) return eol - from <= 8192;
+                if (acc.size() - from > 8192) return false;
                 int n = conn_.read_some(tmp, sizeof tmp);
                 if (n <= 0) return false;
+                if (acc.size() + static_cast<size_t>(n) > 2 * kMaxMetadataBody) return false;
                 acc.append(tmp, (size_t)n);
             }
         };
@@ -749,12 +838,26 @@ private:
         for (;;) {
             size_t eol;
             if (!need_line(p, eol)) return false;
-            size_t sz = (size_t)strtoull(acc.c_str() + p, nullptr, 16);
+            auto text = acc.substr(p, eol - p);
+            text = text.substr(0, text.find(';'));
+            if (text.empty() || text.size() > 16 || text.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) return false;
+            errno = 0;
+            const auto parsed = std::strtoull(text.c_str(), nullptr, 16);
+            if (errno == ERANGE || parsed > kMaxMetadataBody - out.size()) return false;
+            const size_t sz = static_cast<size_t>(parsed);
             p = eol + 2;
-            if (sz == 0) break;                       // trailer ignored
-            if (!need(p + sz + 2)) return false;
+            if (sz == 0) {
+                do {
+                    if (!need_line(p, eol)) return false;
+                    const bool last = eol == p;
+                    p = eol + 2;
+                    if (last) break;
+                } while (true);
+                break;
+            }
+            if (!need(p + sz + 2) || acc.compare(p + sz, 2, "\r\n") != 0) return false;
             out.append(acc, p, sz);
-            p += sz + 2;                              // skip chunk CRLF
+            p += sz + 2;
         }
         acc.swap(out);
         return true;

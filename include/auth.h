@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
+#include <filesystem>
+#include "ytcui-dl/yt_browser.h"
 
 namespace ytui {
 
@@ -57,9 +59,25 @@ public:
         if (f.is_open()) f << browser << "\n";
     }
 
+    static bool export_session(const std::string& browser, const std::string& path,
+                               std::string& error) {
+        auto profiles = ytfast::browser::discover();
+        std::sort(profiles.begin(), profiles.end(), [](const auto& a, const auto& b) { return a.mtime > b.mtime; });
+        for (const auto& profile : profiles) {
+            if (profile.browser != browser) continue;
+            std::vector<ytfast::browser::Cookie> cookies;
+            auto result = ytfast::browser::read_cookies(profile, cookies);
+            if (!result.ok || !ytfast::browser::has_auth(cookies)) continue;
+            return ytfast::browser::write_netscape(path, cookies, &error);
+        }
+        error = "No readable signed-in profile; sign in in your browser first";
+        return false;
+    }
+
     static void clear_browser() { remove(config_path().c_str()); }
 
-    static bool is_logged_in() { return !get_configured_browser().empty(); }
+    // Configuring a browser does not verify a signed-in YouTube session.
+    static bool is_logged_in() { return false; }
 
     static std::string ytdlp_cookie_args() {
         std::string b = get_configured_browser();
@@ -84,8 +102,8 @@ private:
         std::string p = config_path();
         size_t pos = p.rfind('/');
         if (pos != std::string::npos) {
-            std::string cmd = "mkdir -p '" + p.substr(0, pos) + "'";
-            int r = system(cmd.c_str()); (void)r;
+            std::error_code ec;
+            std::filesystem::create_directories(p.substr(0, pos), ec);
         }
     }
 };

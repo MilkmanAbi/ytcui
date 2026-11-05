@@ -1,4 +1,6 @@
 #include "input.h"
+#include "core/text.h"
+#include "termcaps.h"
 #include <algorithm>
 #include <wchar.h>
 
@@ -7,7 +9,7 @@ namespace ytui {
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 static int calc_max_visible(const AppState& s) {
-    int start_y = 7, end_y = s.term_h - 4;
+    int start_y = 6, end_y = s.term_h - (s.show_status_bar ? 4 : 1);
     return std::max(1, end_y - start_y - 1);
 }
 
@@ -75,13 +77,27 @@ static bool stream_handle(int ch, AppState& state) {
         }
 
         case StreamScreen::Actions:
-            if (ch == 'j' || ch == KEY_DOWN) state.stream_action_sel = 1;
-            else if (ch == 'k' || ch == KEY_UP) state.stream_action_sel = 0;
+            if (ch == 'j' || ch == KEY_DOWN) state.stream_action_sel = std::min(state.stream_action_sel + 1, 2);
+            else if (ch == 'k' || ch == KEY_UP) state.stream_action_sel = std::max(state.stream_action_sel - 1, 0);
             else if (ch == 'b' || ch == 27) state.stream_screen = (int)StreamScreen::Browse;
             else if (ch == 'q') state.running = false;
-            else if (is_enter(ch))
-                state.status_message = state.stream_action_sel == 0 ? "__STREAM_PLAY_VIDEO__"
-                                                                    : "__STREAM_PLAY_AUDIO__";
+            else if (is_enter(ch)) {
+                if (state.stream_action_sel == 0)      state.status_message = "__STREAM_PLAY_VIDEO__";
+                else if (state.stream_action_sel == 1) state.status_message = "__STREAM_PLAY_AUDIO__";
+                else                                   state.status_message = "__STREAM_MORE_ACTIONS__";
+            }
+            return false;
+
+        case StreamScreen::MoreActions:
+            if (ch == 'j' || ch == KEY_DOWN)
+                state.selected_action = std::min(state.selected_action + 1,
+                                                 std::max(0, (int)state.actions.size() - 1));
+            else if (ch == 'k' || ch == KEY_UP)
+                state.selected_action = std::max(state.selected_action - 1, 0);
+            else if (ch == 'b' || ch == 27) state.stream_screen = (int)StreamScreen::Actions;
+            else if (ch == 'q') state.running = false;
+            else if (is_enter(ch) && !state.actions.empty())
+                state.status_message = "__EXEC_ACTION__";
             return false;
 
         case StreamScreen::Playing:
@@ -132,6 +148,132 @@ static bool stream_handle(int ch, AppState& state) {
 
 bool InputHandler::handle(int ch, AppState& state) {
     if (ch == ERR) return false;
+    if (state.show_share) state.focus=Panel::ShareMenu;
+
+    const bool text_blocked = state.focus == Panel::ShareMenu || state.focus == Panel::TimerPrompt ||
+        state.focus == Panel::QueueView || state.focus == Panel::ResMenu || state.focus == Panel::BrowserPick ||
+        state.focus == Panel::SavePrompt || state.focus == Panel::PlaylistPick || state.focus == Panel::SortMenu || state.focus == Panel::Shortcuts;
+    std::string* target = nullptr;
+    if (state.focus == Panel::NewPlaylist) target = &state.new_playlist_name;
+    else if ((!text_blocked && state.ui_mode == 1 && state.stream_screen == static_cast<int>(StreamScreen::Search)) ||
+             (state.ui_mode == 0 && state.focus == Panel::Search)) target = &state.search_query;
+    if (target != utf8_target_) { utf8_pending_.clear(); utf8_target_ = target; }
+    if (target && ch >= 128 && ch <= 255) {
+        unsigned char byte = static_cast<unsigned char>(ch);
+        if (byte >= 0xc2 && byte <= 0xf4) utf8_pending_.assign(1, static_cast<char>(byte));
+        else if (byte >= 0x80 && byte <= 0xbf && !utf8_pending_.empty()) utf8_pending_ += static_cast<char>(byte);
+        else utf8_pending_.clear();
+        if (!utf8_pending_.empty()) {
+            unsigned char lead = static_cast<unsigned char>(utf8_pending_[0]);
+            size_t need = lead < 0xe0 ? 2 : lead < 0xf0 ? 3 : 4;
+            if (utf8_pending_.size() == need) {
+                const auto decoded = ytcui::txt::decode_utf8(utf8_pending_);
+                size_t limit = target == &state.new_playlist_name ? 60 : 4096;
+                if (decoded.size() == 1 && ytcui::txt::encode_utf8(decoded[0]) == utf8_pending_ &&
+                    target->size()+need <= limit) *target += utf8_pending_;
+                utf8_pending_.clear();
+            }
+        }
+        return false;
+    }
+    utf8_pending_.clear(); // an ASCII/special key interrupts an incomplete sequence, never gets swallowed
+    if (target == &state.new_playlist_name) {
+        if (ch == KEY_MOUSE) { MEVENT event; getmouse(&event); } else handle_new_playlist(ch, state);
+        return false;
+    }
+    if (target && target->size() >= 4096 && ch >= 32 && ch < 127) return false;
+
+    // Modal overlays take priority regardless of UI mode so TimerPrompt,
+    // QueueView and ShareMenu are reachable in streamlined mode too.
+    if (state.focus == Panel::TimerPrompt) { if (ch == KEY_MOUSE) { MEVENT event; getmouse(&event); } else handle_timer_prompt(ch, state); return false; }
+    if (state.focus == Panel::QueueView)   { handle_queue_view(ch, state);   return false; }
+    if (state.focus == Panel::ShareMenu) {
+        if (ch == KEY_MOUSE) { MEVENT event; getmouse(&event); return false; }
+        if (ch == KEY_RESIZE) return false;
+        if (ch == 'c') state.status_message = "__SHARE_COPY__";
+        else if (ch == 'm') {
+            const auto& caps=TermCaps::get();
+            const bool default_cells = caps.id==TermId::AppleTerminal || !caps.blocks_native || !caps.unicode ||
+                caps.mono_hardening || state.theme==Theme::MLterm;
+            state.share_mode = state.share_mode == 1 || (state.share_mode == 0 && default_cells) ? 2 : 1;
+        } else if (ch == 27 || ch == 'q' || ch == '\n' || ch == '\r' || ch == KEY_ENTER) {
+            state.show_share = false; state.focus = state.share_return_focus;
+        }
+        return false;
+    }
+
+    if (ch == KEY_RESIZE) return false;
+    if (state.focus == Panel::Shortcuts) {
+        if (ch == KEY_MOUSE) { MEVENT event; getmouse(&event); }
+        else { state.show_shortcuts = false; state.focus = state.results.empty() ? Panel::Search : Panel::Results; }
+        return false;
+    }
+    if (state.focus == Panel::SortMenu) { handle_sort_menu(ch, state); return false; }
+    const bool popup = state.focus == Panel::BrowserPick || state.focus == Panel::SavePrompt ||
+                       state.focus == Panel::PlaylistPick || state.focus == Panel::NewPlaylist;
+    if (popup) {
+        if (ch == KEY_MOUSE) {
+            MEVENT event; if (getmouse(&event) != OK) return false;
+            int pw=0, ph=0, first=0, top=0;
+            if (state.focus==Panel::BrowserPick) { pw=std::min(40,state.term_w-4); ph=std::min(static_cast<int>(state.browser_choices.size())+4,state.term_h-2); top=2; first=std::max(0,state.browser_pick_idx-(ph-3)+1); }
+            else if (state.focus==Panel::SavePrompt) { pw=std::min(44,state.term_w-4);ph=7;top=2; }
+            else if (state.focus==Panel::PlaylistPick) {
+                pw=std::min(52,state.term_w-4);ph=std::min(16,state.term_h-6);top=1;
+                first=std::max(0,state.playlist_pick_idx-(ph-3)+1);
+            }
+            int px=(state.term_w-pw)/2, py=(state.term_h-ph)/2;
+            if (pw<10 || ph<4 || ph>state.term_h-2 || event.x<=px || event.x>=px+pw-1) return false;
+            if (event.bstate & BUTTON4_PRESSED) ch=KEY_UP;
+            else if (event.bstate & BUTTON5_PRESSED) ch=KEY_DOWN;
+            else if ((event.bstate & (BUTTON1_CLICKED|BUTTON1_PRESSED)) && event.y>=py+top && event.y<py+ph-1) {
+                int index=first+event.y-py-top;
+                if (state.focus==Panel::BrowserPick && index<static_cast<int>(state.browser_choices.size())) state.browser_pick_idx=index;
+                else if (state.focus==Panel::SavePrompt && index<2) state.save_prompt_idx=index;
+                else if (state.focus==Panel::PlaylistPick && index<static_cast<int>(state.playlist_names.size())) state.playlist_pick_idx=index;
+                else return false;
+                ch='\n';
+            } else return false;
+        }
+        if (state.focus == Panel::BrowserPick) { handle_browser_pick(ch, state); return false; }
+        if (state.focus == Panel::SavePrompt) { handle_save_prompt(ch, state); return false; }
+        if (state.focus == Panel::PlaylistPick) { handle_playlist_pick(ch, state); return false; }
+    }
+    if (state.focus == Panel::ResMenu) {
+        state.res_sel = std::clamp(state.res_sel, 0, std::max(0, static_cast<int>(state.res_labels.size())-1));
+        if (ch == KEY_MOUSE) {
+            MEVENT event;
+            if (getmouse(&event) != OK) return false;
+            int pw = std::min(32, state.term_w-4), ph = std::min(static_cast<int>(state.res_labels.size())+4, state.term_h-4);
+            int px = (state.term_w-pw)/2, py = (state.term_h-ph)/2, vis = ph-3;
+            if (pw < 12 || ph < 4) return false;
+            if (event.bstate & BUTTON4_PRESSED) ch = KEY_UP;
+            else if (event.bstate & BUTTON5_PRESSED) ch = KEY_DOWN;
+            else if ((event.bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) && event.x > px && event.x < px+pw-1) {
+                int start = std::max(0, state.res_sel-vis+1);
+                int index = start+event.y-py-1;
+                if (event.y > py && event.y < py+ph-2 && index >= 0 && index < static_cast<int>(state.res_labels.size())) {
+                    state.res_sel = index; ch = '\n';
+                } else return false;
+            } else return false;
+        }
+        if (ch == 27) {  // Esc — close
+            state.show_res_menu = false;
+            state.focus = Panel::Results;
+        } else if (ch == kb().scroll_down || ch == KEY_DOWN) {
+            if (state.res_sel + 1 < (int)state.res_labels.size())
+                state.res_sel++;
+        } else if (ch == kb().scroll_up || ch == KEY_UP) {
+            if (state.res_sel > 0)
+                state.res_sel--;
+        } else if (ch == '\n' || ch == '\r' || ch == kb().select) {
+            int height = state.res_sel < (int)state.res_heights.size()
+                         ? state.res_heights[state.res_sel] : 0;
+            state.pending_res_height = height;
+            state.show_res_menu = false;
+            state.focus = Panel::Results;
+        }
+        return false;
+    }
 
     // Narrow-terminal streamlined UI has its own, simpler navigation.
     if (state.ui_mode == 1) return stream_handle(ch, state);
@@ -162,8 +304,8 @@ bool InputHandler::handle(int ch, AppState& state) {
         if (ev.bstate & BUTTON5_PRESSED) {
             if      (state.focus == Panel::Actions)        { if (state.selected_action < (int)state.actions.size()-1) state.selected_action++; }
             else if (state.focus == Panel::BrowserPick)    { if (state.browser_pick_idx < (int)state.browser_choices.size()-1) state.browser_pick_idx++; }
-            else if (state.focus == Panel::PlaylistList)   { state.selected_playlist++; /* clamped in render */ }
-            else if (state.focus == Panel::PlaylistView)   { state.playlist_video_idx++; /* clamped in render */ }
+            else if (state.focus == Panel::PlaylistList)   { if (state.selected_playlist < (int)state.playlist_names.size() - 2) state.selected_playlist++; }
+            else if (state.focus == Panel::PlaylistView)   { if (state.playlist_video_count > 0 && state.playlist_video_idx < state.playlist_video_count - 1) state.playlist_video_idx++; }
             else if (state.focus == Panel::PlaylistActions){ if (state.selected_action < (int)state.actions.size()-1) state.selected_action++; }
             else scroll_results(+1);
             return false;
@@ -173,8 +315,8 @@ bool InputHandler::handle(int ch, AppState& state) {
 
         int my = ev.y, mx = ev.x;
 
-        // Search / hamburger row (rows 1-3)
-        if (my >= 1 && my <= 3) {
+        // Search / hamburger row (rows 0-2)
+        if (my >= 0 && my <= 2) {
             if (mx >= state.term_w - 5) {
                 state.sort_col = 0; state.sort_row = 0;
                 state.focus = Panel::SortMenu;
@@ -184,8 +326,8 @@ bool InputHandler::handle(int ch, AppState& state) {
             return false;
         }
 
-        // Tab bar (rows 4-6)
-        if (my >= 4 && my <= 6) {
+        // Tab bar (rows 3-5)
+        if (my >= 3 && my <= 5) {
             // Calculate tab positions matching draw_tabs()
             bool has_results = !state.results.empty();
             int n_tabs = has_results ? 5 : 4;
@@ -216,17 +358,63 @@ bool InputHandler::handle(int ch, AppState& state) {
             return false;
         }
 
+        // Sort menu is a floating overlay — handle it BEFORE the content-area
+        // bounds check, because it can render at any terminal row (centered).
+        // The KEY_MOUSE path in handle_sort_menu() is dead: getmouse() was
+        // already consumed above, so this is the only place to handle clicks.
+        if (state.focus == Panel::SortMenu) {
+            int pw   = std::min(56, state.term_w - 4);
+            int ph   = 10;
+            int px   = std::max(0, (state.term_w - pw) / 2);
+            int py   = std::max(0, (state.term_h - ph) / 2);
+            int half = pw / 2;
+            if (ev.y >= py + 2 && ev.y < py + ph - 1) {
+                int row = ev.y - (py + 2);
+                if (ev.x >= px && ev.x < px + half) {
+                    if (row >= 0 && row < 4) {
+                        state.sort_col = 0; state.sort_row = row;
+                        state.status_message = "__SORT_APPLIED__";
+                        state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+                    }
+                } else if (ev.x >= px + half && ev.x < px + pw) {
+                    if (row >= 0 && row < 6) {
+                        state.sort_col = 1; state.sort_row = row;
+                        state.status_message = "__SORT_APPLIED__";
+                        state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+                    }
+                }
+            } else {
+                // Click outside the sort menu — dismiss with no change.
+                state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+            }
+            return false;
+        }
+
         // Main content area
-        int start_y = 7, end_y = state.term_h - 4;
+        int start_y = 6, end_y = state.term_h - (state.show_status_bar ? 4 : 1);
         if (my <= start_y || my >= end_y) return false;
 
-        // Playlist list tab
-        if (state.active_tab == Tab::Playlists &&
-            (state.focus == Panel::PlaylistList || state.focus == Panel::Tabs)) {
-            int row_idx = my - start_y - 3; // offset for header rows
+        // Playlist list tab: fires for any click when on the Playlists tab and
+        // NOT inside a specific playlist (current_playlist_id non-empty means we
+        // are in PlaylistView, handled below).  Removing the focus restriction
+        // fixes the case where the user switched tabs via keyboard (focus stays
+        // on Search/Results) but then tries to click a playlist row.
+        if (state.active_tab == Tab::Playlists && state.current_playlist_id.empty()) {
+            int row_idx = my - start_y - 3; // 3 header rows before first playlist
             if (row_idx >= 0) {
-                state.selected_playlist = row_idx + state.playlist_scroll;
-                state.focus = Panel::PlaylistList;
+                // playlist_names[0] is always "Create new playlist"; actual
+                // playlists are at indices 1..size-1, so valid playlist indices
+                // are 0..size-2.
+                int n_pl  = static_cast<int>(state.playlist_names.size()) - 1;
+                int idx   = row_idx + state.playlist_scroll;
+                if (n_pl > 0 && idx < n_pl) {
+                    state.selected_playlist = idx;
+                    state.focus = Panel::PlaylistList;
+                    if (mx <= 3)
+                        state.status_message = "__PLAYLIST_TAG__";
+                    else
+                        state.status_message = "__OPEN_PLAYLIST__";
+                }
             }
             return false;
         }
@@ -341,6 +529,33 @@ bool InputHandler::handle(int ch, AppState& state) {
     if (state.focus == Panel::PlaylistView)   { handle_playlist_view(ch, state);   return false; }
     if (state.focus == Panel::PlaylistActions){ handle_playlist_actions(ch, state); return false; }
     if (state.focus == Panel::PlaylistList)   { handle_playlist_list(ch, state);   return false; }
+    if (state.focus == Panel::TimerPrompt)    { handle_timer_prompt(ch, state);    return false; }
+    if (state.focus == Panel::QueueView)      { handle_queue_view(ch, state);      return false; }
+    if (state.focus == Panel::ResMenu) {
+        if (ch == 27) {
+            state.show_res_menu = false;
+            state.focus = Panel::Results;
+        } else if (ch == kb().scroll_down || ch == KEY_DOWN) {
+            if (state.res_sel + 1 < (int)state.res_labels.size())
+                state.res_sel++;
+        } else if (ch == kb().scroll_up || ch == KEY_UP) {
+            if (state.res_sel > 0)
+                state.res_sel--;
+        } else if (ch == '\n' || ch == '\r' || ch == kb().select) {
+            int height = state.res_sel < (int)state.res_heights.size()
+                         ? state.res_heights[state.res_sel] : 0;
+            state.pending_res_height = height;
+            state.show_res_menu = false;
+            state.focus = Panel::Results;
+        }
+        return false;
+    }
+    if (state.focus == Panel::ShareMenu) {
+        // any key dismisses the share menu
+        state.show_share = false;
+        state.focus = Panel::Results;
+        return false;
+    }
 
     // ── Global keys (configurable via Ctrl-S settings) ───────────────────────
     // These honour the live keybindings so rebinds actually take effect. They
@@ -373,6 +588,22 @@ bool InputHandler::handle(int ch, AppState& state) {
         state.show_shortcuts = !state.show_shortcuts;
         if (state.show_shortcuts)
             state.focus = Panel::Shortcuts;
+        return false;
+    }
+    // 'r': open resolution selector (only when ytcui-dl backend has resolved a video)
+    if (!in_search && ch == 'r') {
+        state.res_menu_requested = true;
+        return false;
+    }
+    // Ctrl-Q: toggle queue view
+    if (!in_search && ch == 0x11) {
+        if (state.show_queue) {
+            state.show_queue = false;
+            state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+        } else {
+            state.show_queue = true;
+            state.focus = Panel::QueueView;
+        }
         return false;
     }
     if (!in_search && ch == k.quit) {
@@ -432,12 +663,14 @@ bool InputHandler::handle(int ch, AppState& state) {
                 state.active_tab = Tab::Playlists;
                 state.current_playlist_id.clear();
                 break;
+            case Panel::PlaylistList:
+                // Go up to the tab bar, NOT Search — the Playlists tab stays
+                // active so the user can see the list while picking a tab.
+                state.focus = Panel::Tabs;
+                break;
             case Panel::Results:
-                // Re-run search so user can pick a different video.
-                // Signal app.cpp to re-search the current query.
                 state.focus = Panel::Search;
-                state.active_tab = Tab::Results;
-                state.status_message = "__RESEARCH__";
+                state.active_tab = Tab::Feed;
                 break;
             default:
                 state.focus = Panel::Search;
@@ -473,47 +706,6 @@ bool InputHandler::handle_search_input(int ch, AppState& state) {
         default:
             if (ch >= 32 && ch < 127) {
                 state.search_query += (char)ch;
-            } else if (ch >= 128 && ch <= 255) {
-                // A raw UTF-8 lead byte from getch()'s byte-at-a-time delivery.
-                // Anything >= 256 is an ncurses symbolic KEY_* code (arrows,
-                // function keys, Home/End/PageUp/Down, kitty-protocol keys,
-                // ...), never a byte of input text — some of those numeric
-                // values happen to collide with the 0xC0-0xFF lead-byte
-                // pattern once truncated to a byte, which used to make this
-                // branch "swallow" an unrelated special key as if it were the
-                // start of a multibyte character (then, worse, consume the
-                // *next* real keystroke(s) hunting for continuation bytes
-                // that were never coming). Bounding this to 128..255 is what
-                // the old `ch >= 128` check should have done from the start.
-                unsigned char lead = (unsigned char)ch;
-                int need = 0;
-                if      ((lead & 0xE0) == 0xC0) need = 1;
-                else if ((lead & 0xF0) == 0xE0) need = 2;
-                else if ((lead & 0xF8) == 0xF0) need = 3;
-                else return false;
-                size_t mark = state.search_query.size();
-                state.search_query += (char)ch;
-                timeout(50);
-                for (int i = 0; i < need; i++) {
-                    int b = getch();
-                    if (b == ERR || b > 255 || (b & 0xC0) != 0x80) {
-                        // Not a continuation byte — it's the next real event
-                        // (keystroke, click, resize...). Push it back instead
-                        // of swallowing it, and drop the WHOLE partial
-                        // sequence built so far (not just the last byte) so a
-                        // truncated multibyte char can't linger in the query
-                        // and corrupt every glyph rendered after it.
-                        if (b != ERR) ungetch(b);
-                        state.search_query.resize(mark);
-                        break;
-                    }
-                    state.search_query += (char)b;
-                }
-                // Restore the app's normal 33ms poll rate (set once in
-                // TUI::init()) — this used to hardcode 100ms, permanently
-                // slowing input responsiveness for the rest of the session
-                // after the very first non-ASCII character was typed.
-                timeout(33);
             }
             return false;
     }
@@ -580,7 +772,10 @@ void InputHandler::handle_tabs_input(int ch, AppState& state) {
             } else if (state.active_tab == Tab::Results && has_results) {
                 state.focus = Panel::Results;
             } else if (state.active_tab == Tab::Playlists) {
+                // Single Enter from the tab bar opens the selected playlist
+                // directly — consistent with the mouse click handler.
                 state.focus = Panel::PlaylistList;
+                state.status_message = "__OPEN_PLAYLIST__";
             }
             break;
     }
@@ -667,6 +862,34 @@ void InputHandler::handle_sort_menu(int ch, AppState& state) {
         case 27:
             state.focus = state.results.empty() ? Panel::Search : Panel::Results;
             break;
+        case KEY_MOUSE: {
+            MEVENT ev;
+            if (getmouse(&ev) != OK) break;
+            if (!(ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED))) break;
+            int pw   = std::min(56, state.term_w - 4);
+            int ph   = 10;
+            int px   = std::max(0, (state.term_w - pw) / 2);
+            int py   = std::max(0, (state.term_h - ph) / 2);
+            int half = pw / 2;
+            if (ev.y < py + 2 || ev.y > py + ph - 2) break;
+            int row = ev.y - (py + 2);
+            if (ev.x >= px && ev.x < px + half) {
+                // Sort column (4 items)
+                if (row >= 0 && row < 4) {
+                    state.sort_col = 0; state.sort_row = row;
+                    state.status_message = "__SORT_APPLIED__";
+                    state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+                }
+            } else if (ev.x >= px + half && ev.x < px + pw) {
+                // Filter column (6 items)
+                if (row >= 0 && row < 6) {
+                    state.sort_col = 1; state.sort_row = row;
+                    state.status_message = "__SORT_APPLIED__";
+                    state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+                }
+            }
+            break;
+        }
     }
 }
 
@@ -684,24 +907,35 @@ void InputHandler::handle_save_prompt(int ch, AppState& state) {
 // ─── Playlist list ────────────────────────────────────────────────────────────
 
 void InputHandler::handle_playlist_list(int ch, AppState& state) {
+    // playlist_names[0] is "Create new playlist"; actual playlists are 1..size-1.
+    // Valid selected_playlist range: 0 .. playlist_names.size()-2.
+    int n_pl = std::max(0, (int)state.playlist_names.size() - 1);
     switch (ch) {
         case 'j': case KEY_DOWN:
-            state.selected_playlist++;  // clamped in app render loop
+            if (state.selected_playlist < n_pl - 1)
+                state.selected_playlist++;
             break;
         case 'k': case KEY_UP:
             if (state.selected_playlist > 0) state.selected_playlist--;
             else state.focus = Panel::Tabs;
             break;
+        case 'h': case KEY_LEFT:
+            // Go up to tab bar (Escape is handled globally before reaching here,
+            // but h/left-arrow are not, so we need them here too).
+            state.focus = Panel::Tabs;
+            break;
         case '\n': case KEY_ENTER: case 'l': case KEY_RIGHT:
             state.status_message = "__OPEN_PLAYLIST__";
             break;
         case 'n':
-            // New playlist shortcut from list
             state.new_playlist_name.clear();
             state.focus = Panel::NewPlaylist;
             break;
         case '/':
             state.focus = Panel::Search;
+            break;
+        case 'c':
+            state.status_message = "__PLAYLIST_TAG__";
             break;
     }
 }
@@ -711,7 +945,8 @@ void InputHandler::handle_playlist_list(int ch, AppState& state) {
 void InputHandler::handle_playlist_view(int ch, AppState& state) {
     switch (ch) {
         case 'j': case KEY_DOWN:
-            state.playlist_video_idx++;  // clamped in render
+            if (state.playlist_video_count > 0 && state.playlist_video_idx < state.playlist_video_count - 1)
+                state.playlist_video_idx++;
             break;
         case 'k': case KEY_UP:
             if (state.playlist_video_idx > 0) state.playlist_video_idx--;
@@ -793,6 +1028,61 @@ void InputHandler::handle_new_playlist(int ch, AppState& state) {
         default:
             if (ch >= 32 && ch < 127 && state.new_playlist_name.size() < 60)
                 state.new_playlist_name += (char)ch;
+            break;
+    }
+}
+
+// ─── Timer prompt ─────────────────────────────────────────────────────────────
+void InputHandler::handle_timer_prompt(int ch, AppState& state) {
+    switch (ch) {
+        case KEY_BACKSPACE: case 127: case 8:
+            if (!state.timer_prompt_input.empty())
+                state.timer_prompt_input.pop_back();
+            break;
+        case '\n': case KEY_ENTER:
+            state.status_message = "__APPLY_TIMER__";
+            state.show_timer_prompt = false;
+            state.focus = Panel::Results;
+            break;
+        case 27:
+            state.show_timer_prompt = false;
+            state.focus = Panel::Results;
+            break;
+        default:
+            if (ch >= 32 && ch < 127 && state.timer_prompt_input.size() < 16)
+                state.timer_prompt_input += (char)ch;
+            break;
+    }
+}
+
+// ─── Queue view ───────────────────────────────────────────────────────────────
+void InputHandler::handle_queue_view(int ch, AppState& state) {
+    int n = (int)state.queue_items.size();
+    state.queue_sel = std::clamp(state.queue_sel, 0, std::max(0,n-1));
+    if (ch == KEY_MOUSE) {
+        MEVENT event; if (getmouse(&event) != OK) return;
+        if (event.bstate & BUTTON4_PRESSED) ch = KEY_UP;
+        else if (event.bstate & BUTTON5_PRESSED) ch = KEY_DOWN;
+        else return;
+    }
+    switch (ch) {
+        case 'j': case KEY_DOWN:
+            if (state.queue_sel < n - 1) state.queue_sel++;
+            break;
+        case 'k': case KEY_UP:
+            if (state.queue_sel > 0) state.queue_sel--;
+            break;
+        case '\n': case KEY_ENTER:
+            state.status_message = "__QUEUE_PLAY__";
+            break;
+        case KEY_DC: case 'd':
+            state.status_message = "__QUEUE_REMOVE__";
+            break;
+        case 27: case 'q': case 0x11:  // Esc, q, or Ctrl-Q
+            state.show_queue = false;
+            state.focus = state.results.empty() ? Panel::Search : Panel::Results;
+            break;
+        default:
             break;
     }
 }

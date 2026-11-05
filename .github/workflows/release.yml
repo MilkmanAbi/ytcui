@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.ref }}
+
+  package:
+    needs: ci
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            arch: x86_64
+          - os: macos-15
+            platform: macos-arm64
+            arch: arm64
+          - os: macos-15-intel
+            platform: macos-x86_64
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build libssl-dev zlib1g-dev libncursesw5-dev libcurl4-openssl-dev
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja openssl zlib ncurses curl
+      - name: Configure Linux
+        if: runner.os == 'Linux'
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Configure macOS
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl)" \
+            -DZLIB_ROOT="$(brew --prefix zlib)" \
+            -DCURSES_INCLUDE_PATH="$(brew --prefix ncurses)/include" \
+            -DCURSES_LIBRARY="$(brew --prefix ncurses)/lib/libncursesw.dylib" \
+            -DCURL_ROOT="$(brew --prefix curl)"
+      - name: Build and test
+        run: |
+          cmake --build build --parallel 3
+          ctest --test-dir build --output-on-failure
+      - name: Install portable bundle
+        run: |
+          cmake --install build --prefix "$PWD/stage"
+          mkdir -p dist/vendor
+          cp stage/bin/ytcui stage/bin/ytcui-we dist/
+          cp -R stage/share/ytcui-we/ejs dist/vendor/
+          strip dist/ytcui dist/ytcui-we
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+      - name: Validate macOS architecture
+        if: runner.os == 'macOS'
+        run: |
+          lipo -verify_arch "$EXPECTED_ARCH" dist/ytcui
+          lipo -verify_arch "$EXPECTED_ARCH" dist/ytcui-we
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+      - name: Archive and verify unpacked bundle
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          TAG="v$(tr -d '[:space:]' < VERSION)"
+          tar -czf "ytcui-${TAG}-${PLATFORM}.tar.gz" -C dist .
+          mkdir unpacked
+          tar -xzf "ytcui-${TAG}-${PLATFORM}.tar.gz" -C unpacked
+          (cd /tmp && "$GITHUB_WORKSPACE/unpacked/ytcui" --version)
+          (cd /tmp && "$GITHUB_WORKSPACE/unpacked/ytcui-we" --check-runtime)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ytcui-${{ matrix.platform }}
+          path: ytcui-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [ci, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          test "$RELEASE_TAG" = "v$(tr -d '[:space:]' < VERSION)"
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --verify-tag \
+              --title "ytcui ${RELEASE_TAG}" --notes-file docs/release-install.md
+          fi
+          gh release upload "$RELEASE_TAG" artifacts/*.tar.gz --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
