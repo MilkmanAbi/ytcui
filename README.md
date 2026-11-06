@@ -1,6 +1,8 @@
 # ytcui 5.0.4 (=^･ω･^=)
 
-A fast, beautiful terminal YouTube client — search, play, and manage videos without leaving your shell.
+> ytcui-dl working again, and ytcui-we implemented!!
+
+A fast, user friendly terminal YouTube client — search, play, and manage videos without leaving your shell.
 
 Built in C++17 with ncurses. Plays via mpv, fetches via **ytcui-dl** (built-in, experimental YouTube client of mine), **ytcui-we**, or the mature **yt-dlp**.
 
